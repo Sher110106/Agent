@@ -1,0 +1,19 @@
+{
+  "name": "csv-ai-agent",
+  "version": "1.0.0",
+  "description": "MVP AI agent for CSV data visualization",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "build": "wrangler build"
+  },
+  "dependencies": {
+    "papaparse": "^5.4.1"
+  },
+  "devDependencies": {
+    "@types/papaparse": "^5.3.14",
+    "typescript": "^5.0.0",
+    "wrangler": "^4.19.1"
+  }
+}

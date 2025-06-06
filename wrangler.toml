@@ -1,0 +1,14 @@
+name = "csv-ai-agent"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+[ai]
+binding = "AI"
+
+[[kv_namespaces]]
+binding = "KV"
+id = "c8431a7fe1ca4ebd91ef43ce29fe11a7"
+preview_id = "9c8730d7380746acb4deb2bf032cd64b"
+
+[vars]
+ENVIRONMENT = "production"

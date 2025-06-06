@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir -p /Users/sher/project/new/Agent/src)",
+      "Bash(npm install)",
+      "Bash(npx wrangler --version)",
+      "Bash(npx wrangler dev --local)",
+      "Bash(npm install --save-dev wrangler@4)"
+    ],
+    "deny": []
+  }
+}
