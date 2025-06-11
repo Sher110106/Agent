@@ -1,6 +1,7 @@
 export interface Env {
   AI: any;
   KV: KVNamespace;
+  R2_BUCKET: R2Bucket;
 }
 
 export interface ColumnSchema {
@@ -22,11 +23,28 @@ export interface ColumnStats {
   distribution?: Array<{value: any, count: number}>;
 }
 
+// Enhanced Statistical Analysis interface for rich insights
+export interface DuckDBAnalysis {
+  summary: any[]; // Comprehensive statistical summaries for each column
+  rowCount?: number;
+  columnCount?: number;
+  dataTypes?: Record<string, string>;
+  correlations?: Record<string, number>;
+  patterns?: {
+    strongCorrelations?: any[];
+    highVariability?: any[];
+    categoricalDominance?: any[];
+  };
+  processingTime?: number;
+  error?: string;
+}
+
 export interface UploadResponse {
   datasetId: string;
   schema: ColumnSchema[];
   sampleRows: any[];
-  analysis?: DataAnalysis;
+  analysis: DataAnalysis;
+  duckDbAnalysis: DuckDBAnalysis; // Add this new field
 }
 
 export interface DataAnalysis {
@@ -58,6 +76,7 @@ export interface DataAnalysis {
     chartSpec: any;
     priority: number;
   }>;
+  duckDbAnalysis?: DuckDBAnalysis; // Add this optional field
 }
 
 export interface QueryRequest {

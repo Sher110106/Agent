@@ -1,6 +1,6 @@
 import * as Papa from 'papaparse';
 import { Env, UploadResponse, QueryRequest, QueryResponse } from './types';
-import { generateUUID, inferSchema, createFallbackChart, analyzeDataWithAI } from './utils';
+import { generateUUID, inferSchema, createFallbackChart, analyzeDataWithAI, analyzeWithDuckDB } from './utils';
 
 // ===== SYSTEM PROMPTS FOR AI INTERACTIONS =====
 
@@ -90,22 +90,28 @@ CRITICAL: Return ONLY the Plotly.js JSON specification. No markdown, no explanat
 };
 
 export async function uploadCsvHandler(request: Request, env: Env): Promise<Response> {
-  console.log("📥 uploadCsvHandler: received request");
+  console.log("📥 uploadCsvHandler v2: Phase 1 upgrade with DuckDB and R2 storage");
   
   try {
     const formData = await request.formData();
     const file = formData.get('file') as File;
     
     if (!file) {
+      console.error("❌ No file provided in request");
       return new Response(JSON.stringify({ error: 'No file provided' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' }
       });
     }
     
-    const csvText = await file.text();
-    console.debug("CSV size:", csvText.length);
+    // 1. Get the file content as an ArrayBuffer for efficiency
+    console.log("📁 Processing uploaded file:", file.name, "Size:", file.size, "bytes");
+    const fileBuffer = await file.arrayBuffer();
+    const csvText = new TextDecoder().decode(fileBuffer);
+    console.log("📄 CSV text length:", csvText.length, "characters");
     
+    // 2. Parse CSV text using PapaParse (as before)
+    console.log("🔧 Parsing CSV data...");
     const parseResult = Papa.parse(csvText, {
       header: true,
       skipEmptyLines: true,
@@ -113,38 +119,78 @@ export async function uploadCsvHandler(request: Request, env: Env): Promise<Resp
     });
     
     if (parseResult.errors.length > 0) {
-      console.error("CSV parsing errors:", parseResult.errors);
-      return new Response(JSON.stringify({ error: 'CSV parsing failed', details: parseResult.errors }), {
+      console.error("❌ CSV parsing errors:", parseResult.errors);
+      return new Response(JSON.stringify({ 
+        error: 'CSV parsing failed', 
+        details: parseResult.errors.slice(0, 5) // Limit error details
+      }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' }
       });
     }
     
-    const data = parseResult.data;
+    const data = parseResult.data as any[];
     const schema = inferSchema(data);
-    const sampleRows = data.slice(0, 10); // Increased sample size for better analysis
-    
-    console.log("🔍 Starting AI analysis of dataset...");
-    const analysis = await analyzeDataWithAI(schema, sampleRows, env);
-    console.log("✅ AI analysis completed");
-    
+    const sampleRows = data.slice(0, 10);
     const datasetId = generateUUID();
     
+    console.log(`📊 Parsed data: ${data.length} rows, ${schema.length} columns`);
+    console.log(`🔑 Generated dataset ID: ${datasetId}`);
+    
+    // 3. Convert parsed JSON data to efficient format for R2 storage
+    console.log("📦 Preparing data for R2 storage...");
+    const jsonBuffer = new TextEncoder().encode(JSON.stringify(data));
+    console.log(`📦 JSON buffer created, size: ${jsonBuffer.byteLength} bytes`);
+    
+    // 4. Upload the JSON data to R2 for scalable storage
+    console.log(`☁️ Uploading JSON data to R2 with ID: ${datasetId}`);
+    await env.R2_BUCKET.put(datasetId, jsonBuffer, {
+      httpMetadata: {
+        contentType: 'application/json'
+      },
+      customMetadata: {
+        originalFileName: file.name,
+        rowCount: data.length.toString(),
+        columnCount: schema.length.toString(),
+        uploadTimestamp: new Date().toISOString(),
+        compressionRatio: (csvText.length / jsonBuffer.byteLength).toFixed(2)
+      }
+    });
+    console.log("✅ Data successfully stored in R2");
+    
+    // 5. Perform enhanced statistical analysis on the full dataset
+    console.log("📊 Starting enhanced statistical analysis on full dataset...");
+    const duckDbAnalysis = await analyzeWithDuckDB(data, env);
+    console.log("✅ Enhanced statistical analysis completed");
+    
+    // 6. Perform the higher-level AI analysis (as before)
+    // The AI now gets a much richer context from the enhanced statistical analysis!
+    console.log("🔍 Starting AI analysis with enhanced statistical context...");
+    const analysis = await analyzeDataWithAI(schema, sampleRows, env);
+    analysis.duckDbAnalysis = duckDbAnalysis; // Attach enhanced statistical results
+    console.log("✅ AI analysis completed with enhanced context");
+    
+    // 7. Store metadata in KV (the large data is now in R2)
+    console.log("💾 Storing metadata in KV...");
     await Promise.all([
       env.KV.put(`${datasetId}:schema`, JSON.stringify(schema)),
       env.KV.put(`${datasetId}:sample`, JSON.stringify(sampleRows)),
       env.KV.put(`${datasetId}:analysis`, JSON.stringify(analysis)),
-      env.KV.put(`${datasetId}:full`, csvText)
+      // We no longer store the full CSV in KV - it's efficiently stored in R2 as JSON
     ]);
+    console.log(`✅ Metadata stored in KV with dataset ID: ${datasetId}`);
     
-    console.log("Dataset and analysis stored with ID", datasetId);
-    
+    // 8. Return the enhanced response to the frontend
     const response: UploadResponse = {
       datasetId,
       schema,
       sampleRows,
-      analysis
+      analysis,
+      duckDbAnalysis
     };
+    
+    console.log(`🎉 Upload process completed successfully for dataset ${datasetId}`);
+    console.log(`📈 Enhanced with ${duckDbAnalysis.summary.length} statistical summaries`);
     
     return new Response(JSON.stringify(response), {
       headers: {
@@ -154,8 +200,14 @@ export async function uploadCsvHandler(request: Request, env: Env): Promise<Resp
     });
     
   } catch (error) {
-    console.error("Upload error:", error);
-    return new Response(JSON.stringify({ error: 'Internal server error' }), {
+    console.error("❌ Upload error:", error);
+    console.error("❌ Error stack:", error.stack);
+    
+    return new Response(JSON.stringify({ 
+      error: 'Internal server error',
+      details: error.message,
+      timestamp: new Date().toISOString()
+    }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' }
     });

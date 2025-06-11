@@ -1,119 +1,107 @@
-import { ColumnSchema, ColumnStats, DataAnalysis } from './types';
+import { ColumnSchema, ColumnStats, DataAnalysis, DuckDBAnalysis } from './types';
 
 // ===== SYSTEM PROMPTS FOR AI INTERACTIONS =====
 
 const SYSTEM_PROMPTS = {
-  DATA_ANALYSIS: `You are a Senior Data Scientist and Business Intelligence Expert with 15+ years of experience in statistical analysis, pattern recognition, and business insights generation.
+  DATA_ANALYSIS: `You are a Senior Data Scientist and Business Intelligence Expert specializing in automated data discovery and insight generation.
 
-ROLE & CONTEXT:
-- You analyze CSV datasets to provide comprehensive statistical insights and business intelligence
-- Your analysis helps users understand their data patterns, quality issues, and business opportunities
-- You work with both technical and non-technical stakeholders
+CORE EXPERTISE:
+- Statistical pattern recognition and anomaly detection
+- Business metric identification and KPI analysis  
+- Data quality assessment and improvement recommendations
+- Automated insight generation for non-technical stakeholders
 
-INPUT FORMAT:
-- Dataset schema with column types and basic statistics
-- Sample data rows (typically 8-10 rows)
-- Detailed statistical summaries including distributions, correlations, and quality metrics
+ANALYSIS FRAMEWORK:
+1. DATA CHARACTERIZATION: Identify data types, distributions, and structural patterns
+2. BUSINESS CONTEXT DETECTION: Recognize business metrics, KPIs, and operational data
+3. STATISTICAL SIGNIFICANCE: Calculate correlations, trends, and outliers with confidence intervals
+4. ACTIONABLE INSIGHTS: Generate specific, implementable business recommendations
+5. VISUALIZATION STRATEGY: Recommend optimal chart types based on data characteristics and user intent
 
-OUTPUT REQUIREMENTS:
-- Return ONLY valid JSON matching the exact schema provided
-- Provide actionable business insights, not just technical statistics
-- Generate 5+ specific, valuable insights about patterns and trends
-- Include data quality assessment with specific improvement recommendations
-- Create 3+ tailored visualization suggestions with chart types
-- Generate business-relevant suggested questions for further analysis
-
-QUALITY STANDARDS:
-- Insights must be specific and actionable, not generic
-- Focus on business value and decision-making support
-- Identify unusual patterns, outliers, and correlations
-- Provide clear reasoning for recommendations
-- Use professional business language, avoid jargon
-
-CRITICAL: Always return valid JSON. Never include explanations outside the JSON structure.`,
-
-  REASONING_ANALYSIS: `You are an Expert Data Visualization Strategist and UX Designer specializing in choosing optimal chart types for data storytelling.
-
-ROLE & CONTEXT:
-- You analyze user requests and dataset characteristics to recommend the best visualization approach
-- Your goal is to maximize data clarity, insight discovery, and visual impact
-- You consider both technical data properties and human perception principles
-
-INPUT FORMAT:
-- User's natural language request for a visualization
-- Complete dataset schema with column types and statistics
-- Sample data showing actual values and patterns
-- Existing statistical insights and patterns from previous analysis
-
-REASONING PROCESS:
-1. Parse user intent - what story are they trying to tell?
-2. Assess data suitability - which columns best answer their question?
-3. Consider visualization best practices - what chart type reveals patterns most clearly?
-4. Evaluate alternatives - what other approaches might work?
-5. Predict outcome - what insights will this visualization provide?
+INPUT ANALYSIS PRIORITIES:
+- Identify primary business metrics (revenue, sales, profit, costs, performance indicators)
+- Detect temporal patterns and seasonality in time-series data
+- Recognize categorical segments and their performance variations
+- Calculate statistical significance of patterns and relationships
+- Assess data completeness, consistency, and potential quality issues
 
 OUTPUT REQUIREMENTS:
-- Return ONLY valid JSON with the exact structure specified
-- Provide detailed reasoning that shows your thought process
-- Recommend the single best chart type for the user's goal
-- Identify 2-3 primary variables that should be visualized
-- List key considerations that influenced your decision
-- Suggest 2+ alternative approaches for comparison
-- Explain what insights the user should expect to gain
+- Return ONLY valid JSON with precise statistical measurements
+- Provide quantified insights with specific metrics and percentages
+- Identify top 3-5 most significant patterns with business impact
+- Generate contextually relevant visualization recommendations
+- Create actionable suggested questions based on actual data patterns
 
-CHART TYPE SELECTION CRITERIA:
-- Bar charts: Comparing categories, rankings, discrete values
-- Line charts: Time series, trends, continuous progression
-- Scatter plots: Correlations, relationships between 2+ variables
-- Pie charts: Parts of a whole, percentage distributions (max 8 categories)
-- Histograms: Distribution analysis, frequency patterns
-- Heatmaps: Correlation matrices, intensity patterns
-- Box plots: Distribution comparison, outlier analysis
+CRITICAL: Focus on data-driven insights, not generic observations. All insights must be verifiable from the provided data.`,
 
-CRITICAL: Always return valid JSON. Focus on the "why" behind your recommendations.`,
+  REASONING_ANALYSIS: `You are an Expert Data Visualization Strategist specializing in evidence-based chart selection and statistical storytelling.
 
-  CHART_GENERATION: `You are a Senior Data Visualization Engineer specializing in Plotly.js chart specifications with expertise in creating professional, interactive visualizations.
+VISUALIZATION SELECTION METHODOLOGY:
+1. INTENT ANALYSIS: Decode user's analytical objective (comparison, distribution, correlation, trend, composition)
+2. DATA SUITABILITY: Assess statistical properties, sample size, and data quality constraints
+3. PERCEPTUAL EFFECTIVENESS: Apply Cleveland-McGill hierarchy and gestalt principles
+4. CONTEXT OPTIMIZATION: Consider audience, complexity, and actionability requirements
 
-ROLE & CONTEXT:
-- You create production-ready Plotly.js chart specifications based on analysis and reasoning
-- Your charts must be visually appealing, technically accurate, and optimally configured
-- You follow modern visualization design principles and accessibility standards
+CHART TYPE DECISION MATRIX:
+- COMPARISON (categorical): Bar charts (vertical for <7 categories, horizontal for >7), dot plots for precision
+- TEMPORAL (time-series): Line charts for continuous trends, step charts for discrete events
+- CORRELATION (numeric pairs): Scatter plots with trend lines, bubble charts for 3D relationships  
+- DISTRIBUTION (single variable): Histograms for continuous, box plots for quartile analysis
+- COMPOSITION (part-to-whole): Pie charts for <6 segments, stacked bars for temporal composition
+- RANKING (ordered categories): Horizontal bar charts sorted by value
+- MULTIDIMENSIONAL: Heatmaps for matrices, small multiples for faceted analysis
 
-INPUT FORMAT:
-- Previous AI reasoning analysis with recommended chart type and variables
-- Complete dataset schema with statistical context
-- Sample data rows with actual values
-- User's original visualization request
+STATISTICAL VALIDATION CRITERIA:
+- Minimum sample size: 5+ data points for meaningful visualization
+- Category limits: 2-12 categories for optimal cognitive processing
+- Correlation threshold: |r| > 0.3 for scatter plot recommendations
+- Distribution analysis: Test for normality, skewness, and outlier presence
+- Temporal requirements: Chronological ordering and consistent intervals
 
-IMPLEMENTATION REQUIREMENTS:
-- Generate ONLY valid Plotly.js JSON specification
-- Use the exact chart type recommended in the reasoning analysis
-- Populate x/y arrays with actual data from the sample provided
-- Apply professional styling with appropriate colors and fonts
-- Include meaningful titles, axis labels, and formatting
+OUTPUT REQUIREMENTS:
+- Provide quantitative reasoning with statistical justification
+- Recommend primary chart type with confidence scoring
+- Identify optimal variables based on statistical significance
+- Explain expected insights with specificity and measurability
+- Include alternative approaches with comparative analysis
 
-TECHNICAL SPECIFICATIONS:
-- Colors: Use professional palette starting with #667eea
-- Fonts: Size 16 for titles, 12-14 for labels, color #333
-- Margins: Standard t:60, b:60, l:60, r:40 unless chart needs more space
-- Responsiveness: Charts must work on mobile and desktop
-- Accessibility: Include proper titles and labels for screen readers
+CRITICAL: Base all recommendations on statistical evidence and visualization research principles.`,
 
-CHART-SPECIFIC GUIDELINES:
-- Bar charts: Sort by value when logical, limit to top 10-15 categories
-- Line charts: Sort by x-axis chronologically, smooth lines for trends
-- Scatter plots: Include proper axis scaling, consider trend lines
-- Pie charts: Limit to 8 segments, combine small segments into "Others"
-- Heatmaps: Use diverging color scales, include color bar legends
-- Histograms: Choose appropriate bin sizes, show distribution shape clearly
+  CHART_GENERATION: `You are a Senior Data Visualization Engineer specializing in production-ready Plotly.js implementations with expertise in statistical graphics and interactive design.
 
-QUALITY STANDARDS:
-- Charts must accurately represent the data without distortion
-- Visual hierarchy should guide the viewer's attention appropriately
-- Interactive features should enhance, not overwhelm the experience
-- Performance: Charts should render quickly with sample data sizes
+TECHNICAL IMPLEMENTATION STANDARDS:
+- Generate statistically accurate, publication-quality visualizations
+- Apply evidence-based design principles (Tufte, Cleveland, Few)
+- Ensure accessibility compliance (WCAG 2.1 AA) with proper contrast and labeling
+- Optimize for both desktop and mobile rendering performance
 
-CRITICAL: Return ONLY the Plotly.js JSON specification. No markdown, no explanations, no additional text.`
+PLOTLY.JS SPECIFICATION REQUIREMENTS:
+- Create complete, valid JSON specifications with proper data binding
+- Use actual sample data values with appropriate data transformations
+- Implement responsive layouts with intelligent margin calculations
+- Apply consistent color palettes with semantic meaning
+
+VISUAL DESIGN PRINCIPLES:
+- HIGH DATA-INK RATIO: Minimize chartjunk, maximize information density
+- PERCEPTUAL ACCURACY: Use position/length encodings over color/area when possible
+- CLEAR HIERARCHY: Guide attention through size, contrast, and positioning
+- CONTEXTUAL ANNOTATIONS: Include statistical summaries (mean, median, trends) when relevant
+
+CHART-SPECIFIC OPTIMIZATION:
+- BAR CHARTS: Sort by value, highlight key insights, use consistent baselines
+- LINE CHARTS: Show confidence intervals, trend lines, and seasonal patterns
+- SCATTER PLOTS: Include correlation coefficients, regression lines, density overlays
+- HISTOGRAMS: Optimize bin width using Freedman-Diaconis rule, show distribution statistics
+- PIE CHARTS: Limit to 5-6 segments, order by size, highlight largest segment
+- HEATMAPS: Use perceptually uniform color scales, include correlation values
+
+INTERACTIVITY & PERFORMANCE:
+- Implement hover tooltips with contextual statistics
+- Enable zoom/pan for dense datasets
+- Optimize rendering for sample sizes up to 10,000 points
+- Include download/export capabilities
+
+CRITICAL: Return ONLY complete Plotly.js JSON specification. Ensure mathematical accuracy and visual clarity.`
 };
 
 export function generateUUID(): string {
@@ -505,65 +493,20 @@ async function generateAutoCharts(schema: ColumnSchema[], sampleRows: any[], ana
   const categoricalCols = schema.filter(col => col.type === 'string');
   const dateCols = schema.filter(col => col.type === 'date');
   
-  console.log('🎨 Generating automatic charts...', { numericCols: numericCols.length, categoricalCols: categoricalCols.length, dateCols: dateCols.length });
+  console.log('🎨 Generating intelligent automatic charts...', { numericCols: numericCols.length, categoricalCols: categoricalCols.length, dateCols: dateCols.length });
   
   try {
-    // Chart 1: Numeric Overview (Direct generation)
-    if (numericCols.length > 0) {
-      const overviewChart = generateNumericOverviewChart(numericCols, sampleRows);
-      charts.push({
-        title: "📊 Numeric Data Overview",
-        description: `Comparison of ${numericCols.length} numeric columns`,
-        chartSpec: overviewChart,
-        priority: 1
-      });
+    // Smart Chart Selection based on data characteristics
+    const chartRecommendations = generateSmartChartRecommendations(schema, sampleRows, analysis);
+    
+    for (const recommendation of chartRecommendations) {
+      const chart = await generateOptimalChart(recommendation, schema, sampleRows, analysis);
+      if (chart) {
+        charts.push(chart);
+      }
     }
     
-    // Chart 2: Category Distribution (Direct generation)
-    if (categoricalCols.length > 0) {
-      const categoryChart = generateCategoryDistributionChart(categoricalCols[0], sampleRows);
-      charts.push({
-        title: "🥧 Category Distribution",
-        description: `Distribution of ${categoricalCols[0].name}`,
-        chartSpec: categoryChart,
-        priority: 2
-      });
-    }
-    
-    // Chart 3: Correlation Matrix if multiple numeric columns
-    if (numericCols.length > 1) {
-      const correlationChart = generateCorrelationMatrix(numericCols, sampleRows);
-      charts.push({
-        title: "🔗 Correlation Analysis",
-        description: "Relationships between numeric variables",
-        chartSpec: correlationChart,
-        priority: 3
-      });
-    }
-    
-    // Chart 4: Time series if date column exists
-    if (dateCols.length > 0 && numericCols.length > 0) {
-      const timeSeriesChart = generateTimeSeriesChart(dateCols[0], numericCols[0], sampleRows);
-      charts.push({
-        title: "📈 Time Series Analysis",
-        description: `${numericCols[0].name} trends over ${dateCols[0].name}`,
-        chartSpec: timeSeriesChart,
-        priority: 4
-      });
-    }
-    
-    // Chart 5: Distribution Analysis for top numeric column
-    if (numericCols.length > 0) {
-      const distributionChart = generateDistributionChart(numericCols[0], sampleRows);
-      charts.push({
-        title: "📋 Statistical Distribution",
-        description: `Distribution analysis of ${numericCols[0].name}`,
-        chartSpec: distributionChart,
-        priority: 5
-      });
-    }
-    
-    console.log(`✅ Generated ${charts.length} automatic charts`);
+    console.log(`✅ Generated ${charts.length} intelligent automatic charts`);
     
   } catch (error) {
     console.error('❌ Auto chart generation failed:', error);
@@ -577,6 +520,281 @@ async function generateAutoCharts(schema: ColumnSchema[], sampleRows: any[], ana
   }
   
   return charts;
+}
+
+function generateSmartChartRecommendations(schema: ColumnSchema[], sampleRows: any[], analysis: any): any[] {
+  const recommendations = [];
+  const numericCols = schema.filter(col => col.type === 'number');
+  const categoricalCols = schema.filter(col => col.type === 'string');
+  const dateCols = schema.filter(col => col.type === 'date');
+  
+  // Priority 1: Time Series for temporal data with clear trends
+  if (dateCols.length > 0 && numericCols.length > 0) {
+    const timeCol = dateCols[0];
+    const valueCol = findMostVariableNumericColumn(numericCols, sampleRows);
+    if (valueCol && hasTemporalTrend(timeCol, valueCol, sampleRows)) {
+      recommendations.push({
+        type: 'timeseries',
+        priority: 1,
+        title: `📈 ${valueCol.name} Trends Over Time`,
+        description: `Temporal analysis showing how ${valueCol.name} changes over ${timeCol.name}`,
+        columns: [timeCol, valueCol],
+        reason: 'Strong temporal patterns detected'
+      });
+    }
+  }
+  
+  // Priority 2: Performance Comparison for business metrics
+  if (categoricalCols.length > 0 && numericCols.length > 0) {
+    const categoryCol = findMostBalancedCategoricalColumn(categoricalCols, sampleRows);
+    const metricCol = findBusinessMetricColumn(numericCols, sampleRows);
+    if (categoryCol && metricCol && hasSignificantVariation(categoryCol, metricCol, sampleRows)) {
+      recommendations.push({
+        type: 'comparison',
+        priority: 2,
+        title: `📊 ${metricCol.name} Performance by ${categoryCol.name}`,
+        description: `Compare ${metricCol.name} across different ${categoryCol.name} segments`,
+        columns: [categoryCol, metricCol],
+        reason: 'Significant performance variations detected'
+      });
+    }
+  }
+  
+  // Priority 3: Distribution Analysis for key metrics
+  if (numericCols.length > 0) {
+    const keyMetric = findKeyMetricColumn(numericCols, sampleRows);
+    if (keyMetric && hasInterestingDistribution(keyMetric, sampleRows)) {
+      recommendations.push({
+        type: 'distribution',
+        priority: 3,
+        title: `📋 ${keyMetric.name} Distribution Analysis`,
+        description: `Statistical distribution showing the spread and frequency of ${keyMetric.name} values`,
+        columns: [keyMetric],
+        reason: 'Interesting distribution patterns detected'
+      });
+    }
+  }
+  
+  // Priority 4: Correlation Analysis (only if meaningful relationships exist)
+  if (numericCols.length >= 2) {
+    const correlationPairs = findStrongCorrelations(numericCols, sampleRows);
+    if (correlationPairs.length > 0) {
+      const topPair = correlationPairs[0];
+      recommendations.push({
+        type: 'correlation',
+        priority: 4,
+        title: `🔗 ${topPair.col1.name} vs ${topPair.col2.name} Relationship`,
+        description: `Scatter plot showing correlation between ${topPair.col1.name} and ${topPair.col2.name}`,
+        columns: [topPair.col1, topPair.col2],
+        reason: `Strong correlation detected (${topPair.correlation.toFixed(2)})`
+      });
+    }
+  }
+  
+  // Priority 5: Category Composition (only if meaningful segments)
+  if (categoricalCols.length > 0) {
+    const meaningfulCategory = findMeaningfulCategoryColumn(categoricalCols, sampleRows);
+    if (meaningfulCategory && hasBalancedDistribution(meaningfulCategory, sampleRows)) {
+      recommendations.push({
+        type: 'composition',
+        priority: 5,
+        title: `🥧 ${meaningfulCategory.name} Composition`,
+        description: `Breakdown showing the proportion of each ${meaningfulCategory.name} category`,
+        columns: [meaningfulCategory],
+        reason: 'Balanced category distribution suitable for comparison'
+      });
+    }
+  }
+  
+  return recommendations.sort((a, b) => a.priority - b.priority).slice(0, 4); // Top 4 recommendations
+}
+
+// Helper functions for intelligent chart selection
+function findMostVariableNumericColumn(numericCols: ColumnSchema[], sampleRows: any[]): ColumnSchema | null {
+  if (numericCols.length === 0) return null;
+  
+  return numericCols.reduce((prev, curr) => {
+    const prevVariation = curr.stats?.stdDev || 0;
+    const currVariation = prev.stats?.stdDev || 0;
+    return prevVariation > currVariation ? curr : prev;
+  });
+}
+
+function findBusinessMetricColumn(numericCols: ColumnSchema[], sampleRows: any[]): ColumnSchema | null {
+  // Look for business-relevant column names
+  const businessKeywords = ['revenue', 'sales', 'profit', 'cost', 'price', 'amount', 'value', 'total', 'count'];
+  const businessCol = numericCols.find(col => 
+    businessKeywords.some(keyword => col.name.toLowerCase().includes(keyword))
+  );
+  
+  return businessCol || findMostVariableNumericColumn(numericCols, sampleRows);
+}
+
+function findMostBalancedCategoricalColumn(categoricalCols: ColumnSchema[], sampleRows: any[]): ColumnSchema | null {
+  if (categoricalCols.length === 0) return null;
+  
+  return categoricalCols.reduce((prev, curr) => {
+    const prevBalance = calculateCategoryBalance(prev, sampleRows);
+    const currBalance = calculateCategoryBalance(curr, sampleRows);
+    return currBalance > prevBalance ? curr : prev;
+  });
+}
+
+function calculateCategoryBalance(col: ColumnSchema, sampleRows: any[]): number {
+  const values = sampleRows.map(row => row[col.name]).filter(v => v != null);
+  const uniqueValues = [...new Set(values)];
+  
+  if (uniqueValues.length < 2 || uniqueValues.length > 8) return 0; // Too few or too many categories
+  
+  const counts = uniqueValues.map(val => values.filter(v => v === val).length);
+  const mean = counts.reduce((a, b) => a + b, 0) / counts.length;
+  const variance = counts.reduce((acc, count) => acc + Math.pow(count - mean, 2), 0) / counts.length;
+  
+  // Return balance score (lower variance = more balanced)
+  return mean > 0 ? 1 / (1 + variance / mean) : 0;
+}
+
+function hasTemporalTrend(dateCol: ColumnSchema, numericCol: ColumnSchema, sampleRows: any[]): boolean {
+  const sortedData = sampleRows
+    .filter(row => row[dateCol.name] && row[numericCol.name])
+    .sort((a, b) => new Date(a[dateCol.name]).getTime() - new Date(b[dateCol.name]).getTime());
+  
+  if (sortedData.length < 3) return false;
+  
+  // Check for trend using simple slope analysis
+  const values = sortedData.map(row => Number(row[numericCol.name]));
+  const n = values.length;
+  const slope = (n * values.reduce((acc, val, i) => acc + i * val, 0) - 
+                 (n * (n - 1) / 2) * values.reduce((a, b) => a + b, 0)) / 
+                (n * (n * (n - 1) * (2 * n - 1) / 6) - Math.pow(n * (n - 1) / 2, 2));
+  
+  return Math.abs(slope) > 0.1; // Significant trend
+}
+
+function hasSignificantVariation(categoryCol: ColumnSchema, numericCol: ColumnSchema, sampleRows: any[]): boolean {
+  const groups = sampleRows.reduce((acc, row) => {
+    const category = row[categoryCol.name];
+    const value = Number(row[numericCol.name]);
+    if (category && !isNaN(value)) {
+      if (!acc[category]) acc[category] = [];
+      acc[category].push(value);
+    }
+    return acc;
+  }, {} as Record<string, number[]>);
+  
+  const groupMeans = Object.values(groups).map(values => 
+    values.reduce((a, b) => a + b, 0) / values.length
+  );
+  
+  if (groupMeans.length < 2) return false;
+  
+  const overallMean = groupMeans.reduce((a, b) => a + b, 0) / groupMeans.length;
+  const variance = groupMeans.reduce((acc, mean) => acc + Math.pow(mean - overallMean, 2), 0) / groupMeans.length;
+  
+  return variance > Math.pow(overallMean * 0.1, 2); // At least 10% variation
+}
+
+function hasInterestingDistribution(numericCol: ColumnSchema, sampleRows: any[]): boolean {
+  const values = sampleRows.map(row => Number(row[numericCol.name])).filter(v => !isNaN(v));
+  if (values.length < 5) return false;
+  
+  const mean = values.reduce((a, b) => a + b, 0) / values.length;
+  const variance = values.reduce((acc, val) => acc + Math.pow(val - mean, 2), 0) / values.length;
+  const skewness = Math.abs(numericCol.stats?.stdDev || 0) > mean * 0.1;
+  
+  return skewness || variance > Math.pow(mean * 0.2, 2);
+}
+
+function findStrongCorrelations(numericCols: ColumnSchema[], sampleRows: any[]): any[] {
+  const correlations = [];
+  
+  for (let i = 0; i < numericCols.length; i++) {
+    for (let j = i + 1; j < numericCols.length; j++) {
+      const col1 = numericCols[i];
+      const col2 = numericCols[j];
+      
+      const values1 = sampleRows.map(row => Number(row[col1.name])).filter(v => !isNaN(v));
+      const values2 = sampleRows.map(row => Number(row[col2.name])).filter(v => !isNaN(v));
+      
+      const correlation = calculateCorrelation(values1, values2);
+      
+      if (Math.abs(correlation) > 0.5) { // Strong correlation threshold
+        correlations.push({ col1, col2, correlation });
+      }
+    }
+  }
+  
+  return correlations.sort((a, b) => Math.abs(b.correlation) - Math.abs(a.correlation));
+}
+
+function findKeyMetricColumn(numericCols: ColumnSchema[], sampleRows: any[]): ColumnSchema | null {
+  // Priority: business metrics > high variance > first numeric
+  return findBusinessMetricColumn(numericCols, sampleRows) || 
+         findMostVariableNumericColumn(numericCols, sampleRows);
+}
+
+function findMeaningfulCategoryColumn(categoricalCols: ColumnSchema[], sampleRows: any[]): ColumnSchema | null {
+  return categoricalCols.find(col => {
+    const values = sampleRows.map(row => row[col.name]).filter(v => v != null);
+    const uniqueValues = [...new Set(values)];
+    return uniqueValues.length >= 2 && uniqueValues.length <= 8;
+  }) || null;
+}
+
+function hasBalancedDistribution(categoryCol: ColumnSchema, sampleRows: any[]): boolean {
+  return calculateCategoryBalance(categoryCol, sampleRows) > 0.5;
+}
+
+async function generateOptimalChart(recommendation: any, schema: ColumnSchema[], sampleRows: any[], analysis: any): Promise<any | null> {
+  try {
+    switch (recommendation.type) {
+      case 'timeseries':
+        return {
+          title: recommendation.title,
+          description: recommendation.description,
+          chartSpec: generateAdvancedTimeSeriesChart(recommendation.columns[0], recommendation.columns[1], sampleRows),
+          priority: recommendation.priority
+        };
+      
+      case 'comparison':
+        return {
+          title: recommendation.title,
+          description: recommendation.description,
+          chartSpec: generateAdvancedComparisonChart(recommendation.columns[0], recommendation.columns[1], sampleRows),
+          priority: recommendation.priority
+        };
+      
+      case 'distribution':
+        return {
+          title: recommendation.title,
+          description: recommendation.description,
+          chartSpec: generateAdvancedDistributionChart(recommendation.columns[0], sampleRows),
+          priority: recommendation.priority
+        };
+      
+      case 'correlation':
+        return {
+          title: recommendation.title,
+          description: recommendation.description,
+          chartSpec: generateAdvancedCorrelationChart(recommendation.columns[0], recommendation.columns[1], sampleRows),
+          priority: recommendation.priority
+        };
+      
+      case 'composition':
+        return {
+          title: recommendation.title,
+          description: recommendation.description,
+          chartSpec: generateAdvancedCompositionChart(recommendation.columns[0], sampleRows),
+          priority: recommendation.priority
+        };
+      
+      default:
+        return null;
+    }
+  } catch (error) {
+    console.error(`Failed to generate ${recommendation.type} chart:`, error);
+    return null;
+  }
 }
 
 function generateNumericOverviewChart(numericCols: ColumnSchema[], sampleRows: any[]): any {
@@ -768,6 +986,567 @@ function calculateCorrelation(x: number[], y: number[]): number {
   
   const denominator = Math.sqrt(sumXSquared * sumYSquared);
   return denominator === 0 ? 0 : numerator / denominator;
+}
+
+// Advanced chart generation functions
+function generateAdvancedTimeSeriesChart(dateCol: ColumnSchema, numericCol: ColumnSchema, sampleRows: any[]): any {
+  const sortedData = sampleRows
+    .filter(row => row[dateCol.name] && row[numericCol.name] != null)
+    .sort((a, b) => new Date(a[dateCol.name]).getTime() - new Date(b[dateCol.name]).getTime());
+  
+  const dates = sortedData.map(row => row[dateCol.name]);
+  const values = sortedData.map(row => Number(row[numericCol.name]));
+  
+  // Calculate trend line
+  const trendLine = calculateTrendLine(dates, values);
+  
+  return {
+    data: [
+      {
+        x: dates,
+        y: values,
+        type: 'scatter',
+        mode: 'lines+markers',
+        line: { 
+          color: '#667eea', 
+          width: 3,
+          shape: 'spline' 
+        },
+        marker: { 
+          color: '#764ba2', 
+          size: 8,
+          symbol: 'circle'
+        },
+        name: numericCol.name,
+        hovertemplate: `<b>${dateCol.name}</b>: %{x}<br><b>${numericCol.name}</b>: %{y:,.0f}<extra></extra>`
+      },
+      {
+        x: dates,
+        y: trendLine,
+        type: 'scatter',
+        mode: 'lines',
+        line: { 
+          color: '#ff7b7b', 
+          width: 2,
+          dash: 'dot'
+        },
+        name: 'Trend',
+        hovertemplate: `<b>Trend</b>: %{y:,.0f}<extra></extra>`
+      }
+    ],
+    layout: {
+      title: {
+        text: `${numericCol.name} Trends Over Time`,
+        font: { size: 18, color: '#2d3748', weight: 600 }
+      },
+      xaxis: { 
+        title: { text: dateCol.name, font: { size: 14, color: '#4a5568' } },
+        showgrid: true,
+        gridcolor: '#e2e8f0'
+      },
+      yaxis: { 
+        title: { text: numericCol.name, font: { size: 14, color: '#4a5568' } },
+        showgrid: true,
+        gridcolor: '#e2e8f0'
+      },
+      plot_bgcolor: 'rgba(0,0,0,0)',
+      paper_bgcolor: 'rgba(0,0,0,0)',
+      margin: { t: 60, b: 60, l: 80, r: 40 },
+      hovermode: 'x unified',
+      legend: {
+        orientation: 'h',
+        yanchor: 'bottom',
+        y: 1.02,
+        xanchor: 'right',
+        x: 1
+      }
+    }
+  };
+}
+
+function generateAdvancedComparisonChart(categoryCol: ColumnSchema, numericCol: ColumnSchema, sampleRows: any[]): any {
+  const groupedData = sampleRows.reduce((acc, row) => {
+    const category = row[categoryCol.name];
+    const value = Number(row[numericCol.name]);
+    if (category && !isNaN(value)) {
+      if (!acc[category]) acc[category] = [];
+      acc[category].push(value);
+    }
+    return acc;
+  }, {} as Record<string, number[]>);
+  
+  // Calculate statistics for each group
+  const chartData = Object.entries(groupedData)
+    .map(([category, values]) => ({
+      category,
+      mean: values.reduce((a, b) => a + b, 0) / values.length,
+      count: values.length,
+      values
+    }))
+    .sort((a, b) => b.mean - a.mean)
+    .slice(0, 10); // Top 10 categories
+  
+  return {
+    data: [{
+      x: chartData.map(d => d.category),
+      y: chartData.map(d => d.mean),
+      type: 'bar',
+      marker: {
+        color: chartData.map((_, i) => `hsl(${220 + i * 25}, 70%, ${60 + (i % 3) * 10}%)`),
+        opacity: 0.8,
+        line: { color: '#2d3748', width: 1 }
+      },
+      text: chartData.map(d => `${d.mean.toLocaleString()}`),
+      textposition: 'outside',
+      hovertemplate: `<b>%{x}</b><br>${numericCol.name}: %{y:,.0f}<br>Sample Count: %{customdata}<extra></extra>`,
+      customdata: chartData.map(d => d.count)
+    }],
+    layout: {
+      title: {
+        text: `${numericCol.name} Performance by ${categoryCol.name}`,
+        font: { size: 18, color: '#2d3748', weight: 600 }
+      },
+      xaxis: { 
+        title: { text: categoryCol.name, font: { size: 14, color: '#4a5568' } },
+        tickangle: -45
+      },
+      yaxis: { 
+        title: { text: `Average ${numericCol.name}`, font: { size: 14, color: '#4a5568' } },
+        showgrid: true,
+        gridcolor: '#e2e8f0'
+      },
+      plot_bgcolor: 'rgba(0,0,0,0)',
+      paper_bgcolor: 'rgba(0,0,0,0)',
+      margin: { t: 60, b: 100, l: 80, r: 40 },
+      showlegend: false
+    }
+  };
+}
+
+function generateAdvancedDistributionChart(numericCol: ColumnSchema, sampleRows: any[]): any {
+  const values = sampleRows
+    .map(row => Number(row[numericCol.name]))
+    .filter(val => !isNaN(val));
+  
+  if (values.length === 0) return createFallbackChart([], []);
+  
+  // Calculate statistics
+  const mean = values.reduce((a, b) => a + b, 0) / values.length;
+  const sorted = [...values].sort((a, b) => a - b);
+  const q1 = sorted[Math.floor(sorted.length * 0.25)];
+  const median = sorted[Math.floor(sorted.length * 0.5)];
+  const q3 = sorted[Math.floor(sorted.length * 0.75)];
+  
+  return {
+    data: [
+      {
+        x: values,
+        type: 'histogram',
+        nbinsx: Math.min(30, Math.max(10, Math.floor(Math.sqrt(values.length)))),
+        marker: {
+          color: '#667eea',
+          opacity: 0.7,
+          line: { color: '#2d3748', width: 1 }
+        },
+        name: 'Distribution',
+        hovertemplate: `Range: %{x}<br>Count: %{y}<extra></extra>`
+      }
+    ],
+    layout: {
+      title: {
+        text: `${numericCol.name} Distribution Analysis`,
+        font: { size: 18, color: '#2d3748', weight: 600 }
+      },
+      xaxis: { 
+        title: { text: numericCol.name, font: { size: 14, color: '#4a5568' } },
+        showgrid: true,
+        gridcolor: '#e2e8f0'
+      },
+      yaxis: { 
+        title: { text: 'Frequency', font: { size: 14, color: '#4a5568' } },
+        showgrid: true,
+        gridcolor: '#e2e8f0'
+      },
+      plot_bgcolor: 'rgba(0,0,0,0)',
+      paper_bgcolor: 'rgba(0,0,0,0)',
+      margin: { t: 60, b: 60, l: 60, r: 40 },
+      shapes: [
+        // Mean line
+        {
+          type: 'line',
+          x0: mean,
+          y0: 0,
+          x1: mean,
+          y1: 1,
+          yref: 'paper',
+          line: { color: '#e53e3e', width: 2, dash: 'dash' }
+        },
+        // Median line
+        {
+          type: 'line',
+          x0: median,
+          y0: 0,
+          x1: median,
+          y1: 1,
+          yref: 'paper',
+          line: { color: '#38a169', width: 2, dash: 'dot' }
+        }
+      ],
+      annotations: [
+        {
+          x: mean,
+          y: 0.9,
+          yref: 'paper',
+          text: `Mean: ${mean.toFixed(1)}`,
+          showarrow: true,
+          arrowhead: 2,
+          arrowcolor: '#e53e3e',
+          font: { color: '#e53e3e', size: 12 }
+        },
+        {
+          x: median,
+          y: 0.8,
+          yref: 'paper',
+          text: `Median: ${median.toFixed(1)}`,
+          showarrow: true,
+          arrowhead: 2,
+          arrowcolor: '#38a169',
+          font: { color: '#38a169', size: 12 }
+        }
+      ]
+    }
+  };
+}
+
+function generateAdvancedCorrelationChart(col1: ColumnSchema, col2: ColumnSchema, sampleRows: any[]): any {
+  const data = sampleRows
+    .filter(row => row[col1.name] != null && row[col2.name] != null)
+    .map(row => ({
+      x: Number(row[col1.name]),
+      y: Number(row[col2.name])
+    }))
+    .filter(point => !isNaN(point.x) && !isNaN(point.y));
+  
+  if (data.length === 0) return createFallbackChart([], []);
+  
+  // Calculate correlation coefficient
+  const correlation = calculateCorrelation(
+    data.map(d => d.x),
+    data.map(d => d.y)
+  );
+  
+  // Calculate trend line
+  const xValues = data.map(d => d.x);
+  const yValues = data.map(d => d.y);
+  const trendLine = calculateLinearTrendLine(xValues, yValues);
+  
+  return {
+    data: [
+      {
+        x: data.map(d => d.x),
+        y: data.map(d => d.y),
+        type: 'scatter',
+        mode: 'markers',
+        marker: {
+          color: '#667eea',
+          size: 10,
+          opacity: 0.7,
+          line: { color: '#2d3748', width: 1 }
+        },
+        name: 'Data Points',
+        hovertemplate: `<b>${col1.name}</b>: %{x:,.1f}<br><b>${col2.name}</b>: %{y:,.1f}<extra></extra>`
+      },
+      {
+        x: [Math.min(...xValues), Math.max(...xValues)],
+        y: trendLine,
+        type: 'scatter',
+        mode: 'lines',
+        line: { color: '#e53e3e', width: 3 },
+        name: `Trend (r=${correlation.toFixed(3)})`,
+        hovertemplate: `<b>Correlation</b>: ${correlation.toFixed(3)}<extra></extra>`
+      }
+    ],
+    layout: {
+      title: {
+        text: `${col1.name} vs ${col2.name} Relationship`,  
+        font: { size: 18, color: '#2d3748', weight: 600 }
+      },
+      xaxis: { 
+        title: { text: col1.name, font: { size: 14, color: '#4a5568' } },
+        showgrid: true,
+        gridcolor: '#e2e8f0'
+      },
+      yaxis: { 
+        title: { text: col2.name, font: { size: 14, color: '#4a5568' } },
+        showgrid: true,
+        gridcolor: '#e2e8f0'
+      },
+      plot_bgcolor: 'rgba(0,0,0,0)',
+      paper_bgcolor: 'rgba(0,0,0,0)',
+      margin: { t: 80, b: 60, l: 80, r: 40 },
+      annotations: [{
+        x: 0.02,
+        y: 0.98,
+        xref: 'paper',
+        yref: 'paper',
+        text: `Correlation: ${correlation.toFixed(3)}<br>Strength: ${getCorrelationStrength(correlation)}`,
+        showarrow: false,
+        bgcolor: 'rgba(255,255,255,0.8)',
+        bordercolor: '#e2e8f0',
+        borderwidth: 1,
+        font: { size: 12, color: '#2d3748' }
+      }]
+    }
+  };
+}
+
+function generateAdvancedCompositionChart(categoryCol: ColumnSchema, sampleRows: any[]): any {
+  const counts = sampleRows.reduce((acc, row) => {
+    const value = row[categoryCol.name];
+    if (value != null) {
+      acc[value] = (acc[value] || 0) + 1;
+    }
+    return acc;
+  }, {} as Record<string, number>);
+  
+  const sortedCounts = Object.entries(counts)
+    .sort(([,a], [,b]) => b - a)
+    .slice(0, 8); // Top 8 categories
+  
+  const total = sortedCounts.reduce((sum, [, count]) => sum + count, 0);
+  const colors = [
+    '#667eea', '#764ba2', '#f093fb', '#f5576c', 
+    '#4facfe', '#00f2fe', '#43e97b', '#38f9d7'
+  ];
+  
+  return {
+    data: [{
+      labels: sortedCounts.map(([label]) => label),
+      values: sortedCounts.map(([,value]) => value),
+      type: 'pie',
+      marker: {
+        colors: colors.slice(0, sortedCounts.length),
+        line: { color: '#ffffff', width: 2 }
+      },
+      textinfo: 'label+percent+value',
+      textposition: 'auto',
+      textfont: { size: 12, color: '#2d3748' },
+      hovertemplate: `<b>%{label}</b><br>Count: %{value}<br>Percentage: %{percent}<extra></extra>`,
+      pull: sortedCounts.map((_, i) => i === 0 ? 0.1 : 0) // Highlight largest segment
+    }],
+    layout: {
+      title: {
+        text: `${categoryCol.name} Distribution`,
+        font: { size: 18, color: '#2d3748', weight: 600 }
+      },
+      plot_bgcolor: 'rgba(0,0,0,0)',
+      paper_bgcolor: 'rgba(0,0,0,0)',
+      margin: { t: 60, b: 60, l: 60, r: 60 },
+      showlegend: true,
+      legend: {
+        orientation: 'v',
+        yanchor: 'middle',
+        y: 0.5,
+        x: 1.05
+      },
+      annotations: [{
+        text: `Total: ${total}`,
+        x: 0.5,
+        y: 0.5,
+        xref: 'paper',
+        yref: 'paper',
+        showarrow: false,
+        font: { size: 16, color: '#2d3748', weight: 600 }
+      }]
+    }
+  };
+}
+
+// Helper functions for advanced charts
+function calculateTrendLine(dates: string[], values: number[]): number[] {
+  const n = dates.length;
+  if (n < 2) return values;
+  
+  const timeValues = dates.map(date => new Date(date).getTime());
+  const meanTime = timeValues.reduce((a, b) => a + b, 0) / n;
+  const meanValue = values.reduce((a, b) => a + b, 0) / n;
+  
+  const numerator = timeValues.reduce((acc, time, i) => acc + (time - meanTime) * (values[i] - meanValue), 0);
+  const denominator = timeValues.reduce((acc, time) => acc + Math.pow(time - meanTime, 2), 0);
+  
+  const slope = denominator !== 0 ? numerator / denominator : 0;
+  const intercept = meanValue - slope * meanTime;
+  
+  return timeValues.map(time => slope * time + intercept);
+}
+
+function calculateLinearTrendLine(xValues: number[], yValues: number[]): number[] {
+  const n = xValues.length;
+  if (n < 2) return yValues;
+  
+  const meanX = xValues.reduce((a, b) => a + b, 0) / n;
+  const meanY = yValues.reduce((a, b) => a + b, 0) / n;
+  
+  const numerator = xValues.reduce((acc, x, i) => acc + (x - meanX) * (yValues[i] - meanY), 0);
+  const denominator = xValues.reduce((acc, x) => acc + Math.pow(x - meanX, 2), 0);
+  
+  const slope = denominator !== 0 ? numerator / denominator : 0;
+  const intercept = meanY - slope * meanX;
+  
+  const minX = Math.min(...xValues);
+  const maxX = Math.max(...xValues);
+  
+  return [slope * minX + intercept, slope * maxX + intercept];
+}
+
+function getCorrelationStrength(correlation: number): string {
+  const abs = Math.abs(correlation);
+  if (abs >= 0.9) return 'Very Strong';
+  if (abs >= 0.7) return 'Strong';
+  if (abs >= 0.5) return 'Moderate';
+  if (abs >= 0.3) return 'Weak';
+  return 'Very Weak';
+}
+
+// Enhanced Statistical Analysis (Phase 1 - without DuckDB for now)
+export async function analyzeWithDuckDB(
+  jsonData: any[],
+  env: any
+): Promise<DuckDBAnalysis> {
+  console.log('📊 Starting enhanced statistical analysis...');
+  const start = Date.now();
+
+  try {
+    const schema = inferSchema(jsonData);
+    const rowCount = jsonData.length;
+    const columnCount = schema.length;
+    
+    // Generate comprehensive summary statistics for each column
+    const summary = schema.map(col => {
+      const values = jsonData.map(row => row[col.name]).filter(v => v != null);
+      const nonNullCount = values.length;
+      const nullCount = rowCount - nonNullCount;
+      
+      let stats: any = {
+        column_name: col.name,
+        column_type: col.type,
+        count: nonNullCount,
+        nulls: nullCount,
+        unique: [...new Set(values)].length
+      };
+      
+      if (col.type === 'number') {
+        const numValues = values.map(v => Number(v)).filter(v => !isNaN(v));
+        if (numValues.length > 0) {
+          const sorted = [...numValues].sort((a, b) => a - b);
+          const mean = numValues.reduce((a, b) => a + b, 0) / numValues.length;
+          const variance = numValues.reduce((acc, val) => acc + Math.pow(val - mean, 2), 0) / numValues.length;
+          
+          stats.min = Math.min(...numValues);
+          stats.max = Math.max(...numValues);
+          stats.mean = mean;
+          stats.std = Math.sqrt(variance);
+          stats.q25 = sorted[Math.floor(sorted.length * 0.25)];
+          stats.q50 = sorted[Math.floor(sorted.length * 0.5)];
+          stats.q75 = sorted[Math.floor(sorted.length * 0.75)];
+        }
+      } else if (col.type === 'string') {
+        // Get frequency distribution for categorical data
+        const frequencies = values.reduce((acc, val) => {
+          acc[val] = (acc[val] || 0) + 1;
+          return acc;
+        }, {} as Record<string, number>);
+        
+        const topCategories = Object.entries(frequencies)
+          .sort(([,a], [,b]) => b - a)
+          .slice(0, 10);
+        
+        stats.top_categories = topCategories;
+        stats.category_count = Object.keys(frequencies).length;
+      }
+      
+      return stats;
+    });
+    
+    // Calculate correlations between numeric columns
+    const numericColumns = schema.filter(col => col.type === 'number');
+    const correlations: any = {};
+    
+    for (let i = 0; i < numericColumns.length; i++) {
+      for (let j = i + 1; j < numericColumns.length; j++) {
+        const col1 = numericColumns[i];
+        const col2 = numericColumns[j];
+        
+        const values1 = jsonData.map(row => Number(row[col1.name])).filter(v => !isNaN(v));
+        const values2 = jsonData.map(row => Number(row[col2.name])).filter(v => !isNaN(v));
+        
+        const correlation = calculateCorrelation(values1, values2);
+        if (Math.abs(correlation) > 0.1) { // Only store meaningful correlations
+          correlations[`${col1.name}_${col2.name}`] = correlation;
+        }
+      }
+    }
+    
+    // Identify data patterns and anomalies
+    const patterns = {
+      strongCorrelations: Object.entries(correlations).filter(([,corr]) => Math.abs(corr as number) > 0.7),
+      highVariability: numericColumns
+        .map(col => ({
+          column: col.name,
+          cv: (col.stats?.stdDev || 0) / (col.stats?.mean || 1)
+        }))
+        .filter(item => item.cv > 0.5)
+        .sort((a, b) => b.cv - a.cv)
+        .slice(0, 5),
+      categoricalDominance: schema
+        .filter(col => col.type === 'string')
+        .map(col => {
+          const values = jsonData.map(row => row[col.name]).filter(v => v != null);
+          const frequencies = values.reduce((acc, val) => {
+            acc[val] = (acc[val] || 0) + 1;
+            return acc;
+          }, {} as Record<string, number>);
+          const maxFreq = Math.max(...Object.values(frequencies));
+          return {
+            column: col.name,
+            dominance: maxFreq / values.length,
+            topValue: Object.entries(frequencies).find(([,freq]) => freq === maxFreq)?.[0]
+          };
+        })
+        .filter(item => item.dominance > 0.7)
+        .sort((a, b) => b.dominance - a.dominance)
+    };
+    
+    const duration = Date.now() - start;
+    console.log(`✅ Enhanced statistical analysis completed in ${duration}ms`);
+    console.log(`📊 Processed ${rowCount} rows, ${columnCount} columns`);
+    console.log(`🔍 Found ${Object.keys(correlations).length} correlations, ${patterns.highVariability.length} high-variability columns`);
+    
+    return {
+      summary,
+      rowCount,
+      columnCount,
+      dataTypes: schema.reduce((acc, col) => {
+        acc[col.name] = col.type;
+        return acc;
+      }, {} as Record<string, string>),
+      correlations,
+      patterns,
+      processingTime: duration
+    };
+    
+  } catch (error) {
+    const duration = Date.now() - start;
+    console.error(`❌ Enhanced analysis failed after ${duration}ms:`, error);
+    
+    return {
+      summary: [],
+      rowCount: jsonData.length,
+      columnCount: 0,
+      dataTypes: {},
+      error: error.message
+    };
+  }
 }
 
 async function generateSingleChart(prompt: string, schema: ColumnSchema[], sampleRows: any[], env: any): Promise<any> {

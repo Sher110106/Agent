@@ -10,5 +10,10 @@ binding = "KV"
 id = "c8431a7fe1ca4ebd91ef43ce29fe11a7"
 preview_id = "9c8730d7380746acb4deb2bf032cd64b"
 
+# R2 bucket for high-performance data storage
+[[r2_buckets]]
+binding = "R2_BUCKET"
+bucket_name = "csv-ai-agent-data"
+
 [vars]
 ENVIRONMENT = "production"
