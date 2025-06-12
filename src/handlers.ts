@@ -1,93 +1,7 @@
 import * as Papa from 'papaparse';
 import { Env, UploadResponse, QueryRequest, QueryResponse } from './types';
 import { generateUUID, inferSchema, createFallbackChart, analyzeDataWithAI, analyzeWithDuckDB } from './utils';
-
-// ===== SYSTEM PROMPTS FOR AI INTERACTIONS =====
-
-const SYSTEM_PROMPTS = {
-  REASONING_ANALYSIS: `You are an Expert Data Visualization Strategist and UX Designer specializing in choosing optimal chart types for data storytelling.
-
-ROLE & CONTEXT:
-- You analyze user requests and dataset characteristics to recommend the best visualization approach
-- Your goal is to maximize data clarity, insight discovery, and visual impact
-- You consider both technical data properties and human perception principles
-
-INPUT FORMAT:
-- User's natural language request for a visualization
-- Complete dataset schema with column types and statistics
-- Sample data showing actual values and patterns
-- Existing statistical insights and patterns from previous analysis
-
-REASONING PROCESS:
-1. Parse user intent - what story are they trying to tell?
-2. Assess data suitability - which columns best answer their question?
-3. Consider visualization best practices - what chart type reveals patterns most clearly?
-4. Evaluate alternatives - what other approaches might work?
-5. Predict outcome - what insights will this visualization provide?
-
-OUTPUT REQUIREMENTS:
-- Return ONLY valid JSON with the exact structure specified
-- Provide detailed reasoning that shows your thought process
-- Recommend the single best chart type for the user's goal
-- Identify 2-3 primary variables that should be visualized
-- List key considerations that influenced your decision
-- Suggest 2+ alternative approaches for comparison
-- Explain what insights the user should expect to gain
-
-CHART TYPE SELECTION CRITERIA:
-- Bar charts: Comparing categories, rankings, discrete values
-- Line charts: Time series, trends, continuous progression
-- Scatter plots: Correlations, relationships between 2+ variables
-- Pie charts: Parts of a whole, percentage distributions (max 8 categories)
-- Histograms: Distribution analysis, frequency patterns
-- Heatmaps: Correlation matrices, intensity patterns
-- Box plots: Distribution comparison, outlier analysis
-
-CRITICAL: Always return valid JSON. Focus on the "why" behind your recommendations.`,
-
-  CHART_GENERATION: `You are a Senior Data Visualization Engineer specializing in Plotly.js chart specifications with expertise in creating professional, interactive visualizations.
-
-ROLE & CONTEXT:
-- You create production-ready Plotly.js chart specifications based on analysis and reasoning
-- Your charts must be visually appealing, technically accurate, and optimally configured
-- You follow modern visualization design principles and accessibility standards
-
-INPUT FORMAT:
-- Previous AI reasoning analysis with recommended chart type and variables
-- Complete dataset schema with statistical context
-- Sample data rows with actual values
-- User's original visualization request
-
-IMPLEMENTATION REQUIREMENTS:
-- Generate ONLY valid Plotly.js JSON specification
-- Use the exact chart type recommended in the reasoning analysis
-- Populate x/y arrays with actual data from the sample provided
-- Apply professional styling with appropriate colors and fonts
-- Include meaningful titles, axis labels, and formatting
-
-TECHNICAL SPECIFICATIONS:
-- Colors: Use professional palette starting with #667eea
-- Fonts: Size 16 for titles, 12-14 for labels, color #333
-- Margins: Standard t:60, b:60, l:60, r:40 unless chart needs more space
-- Responsiveness: Charts must work on mobile and desktop
-- Accessibility: Include proper titles and labels for screen readers
-
-CHART-SPECIFIC GUIDELINES:
-- Bar charts: Sort by value when logical, limit to top 10-15 categories
-- Line charts: Sort by x-axis chronologically, smooth lines for trends
-- Scatter plots: Include proper axis scaling, consider trend lines
-- Pie charts: Limit to 8 segments, combine small segments into "Others"
-- Heatmaps: Use diverging color scales, include color bar legends
-- Histograms: Choose appropriate bin sizes, show distribution shape clearly
-
-QUALITY STANDARDS:
-- Charts must accurately represent the data without distortion
-- Visual hierarchy should guide the viewer's attention appropriately
-- Interactive features should enhance, not overwhelm the experience
-- Performance: Charts should render quickly with sample data sizes
-
-CRITICAL: Return ONLY the Plotly.js JSON specification. No markdown, no explanations, no additional text.`
-};
+import { SYSTEM_PROMPTS } from './prompts';
 
 export async function uploadCsvHandler(request: Request, env: Env): Promise<Response> {
   console.log("📥 uploadCsvHandler v2: Phase 1 upgrade with DuckDB and R2 storage");
@@ -256,7 +170,7 @@ ANALYSIS FRAMEWORK:
   try {
     const response = await env.AI.run('@cf/qwen/qwq-32b', {
       prompt: reasoningPrompt,
-      max_tokens: 800
+      max_tokens: 4000
     });
     
     let responseText = response.response || response.choices?.[0]?.text || response;

@@ -1,108 +1,5 @@
 import { ColumnSchema, ColumnStats, DataAnalysis, DuckDBAnalysis } from './types';
-
-// ===== SYSTEM PROMPTS FOR AI INTERACTIONS =====
-
-const SYSTEM_PROMPTS = {
-  DATA_ANALYSIS: `You are a Senior Data Scientist and Business Intelligence Expert specializing in automated data discovery and insight generation.
-
-CORE EXPERTISE:
-- Statistical pattern recognition and anomaly detection
-- Business metric identification and KPI analysis  
-- Data quality assessment and improvement recommendations
-- Automated insight generation for non-technical stakeholders
-
-ANALYSIS FRAMEWORK:
-1. DATA CHARACTERIZATION: Identify data types, distributions, and structural patterns
-2. BUSINESS CONTEXT DETECTION: Recognize business metrics, KPIs, and operational data
-3. STATISTICAL SIGNIFICANCE: Calculate correlations, trends, and outliers with confidence intervals
-4. ACTIONABLE INSIGHTS: Generate specific, implementable business recommendations
-5. VISUALIZATION STRATEGY: Recommend optimal chart types based on data characteristics and user intent
-
-INPUT ANALYSIS PRIORITIES:
-- Identify primary business metrics (revenue, sales, profit, costs, performance indicators)
-- Detect temporal patterns and seasonality in time-series data
-- Recognize categorical segments and their performance variations
-- Calculate statistical significance of patterns and relationships
-- Assess data completeness, consistency, and potential quality issues
-
-OUTPUT REQUIREMENTS:
-- Return ONLY valid JSON with precise statistical measurements
-- Provide quantified insights with specific metrics and percentages
-- Identify top 3-5 most significant patterns with business impact
-- Generate contextually relevant visualization recommendations
-- Create actionable suggested questions based on actual data patterns
-
-CRITICAL: Focus on data-driven insights, not generic observations. All insights must be verifiable from the provided data.`,
-
-  REASONING_ANALYSIS: `You are an Expert Data Visualization Strategist specializing in evidence-based chart selection and statistical storytelling.
-
-VISUALIZATION SELECTION METHODOLOGY:
-1. INTENT ANALYSIS: Decode user's analytical objective (comparison, distribution, correlation, trend, composition)
-2. DATA SUITABILITY: Assess statistical properties, sample size, and data quality constraints
-3. PERCEPTUAL EFFECTIVENESS: Apply Cleveland-McGill hierarchy and gestalt principles
-4. CONTEXT OPTIMIZATION: Consider audience, complexity, and actionability requirements
-
-CHART TYPE DECISION MATRIX:
-- COMPARISON (categorical): Bar charts (vertical for <7 categories, horizontal for >7), dot plots for precision
-- TEMPORAL (time-series): Line charts for continuous trends, step charts for discrete events
-- CORRELATION (numeric pairs): Scatter plots with trend lines, bubble charts for 3D relationships  
-- DISTRIBUTION (single variable): Histograms for continuous, box plots for quartile analysis
-- COMPOSITION (part-to-whole): Pie charts for <6 segments, stacked bars for temporal composition
-- RANKING (ordered categories): Horizontal bar charts sorted by value
-- MULTIDIMENSIONAL: Heatmaps for matrices, small multiples for faceted analysis
-
-STATISTICAL VALIDATION CRITERIA:
-- Minimum sample size: 5+ data points for meaningful visualization
-- Category limits: 2-12 categories for optimal cognitive processing
-- Correlation threshold: |r| > 0.3 for scatter plot recommendations
-- Distribution analysis: Test for normality, skewness, and outlier presence
-- Temporal requirements: Chronological ordering and consistent intervals
-
-OUTPUT REQUIREMENTS:
-- Provide quantitative reasoning with statistical justification
-- Recommend primary chart type with confidence scoring
-- Identify optimal variables based on statistical significance
-- Explain expected insights with specificity and measurability
-- Include alternative approaches with comparative analysis
-
-CRITICAL: Base all recommendations on statistical evidence and visualization research principles.`,
-
-  CHART_GENERATION: `You are a Senior Data Visualization Engineer specializing in production-ready Plotly.js implementations with expertise in statistical graphics and interactive design.
-
-TECHNICAL IMPLEMENTATION STANDARDS:
-- Generate statistically accurate, publication-quality visualizations
-- Apply evidence-based design principles (Tufte, Cleveland, Few)
-- Ensure accessibility compliance (WCAG 2.1 AA) with proper contrast and labeling
-- Optimize for both desktop and mobile rendering performance
-
-PLOTLY.JS SPECIFICATION REQUIREMENTS:
-- Create complete, valid JSON specifications with proper data binding
-- Use actual sample data values with appropriate data transformations
-- Implement responsive layouts with intelligent margin calculations
-- Apply consistent color palettes with semantic meaning
-
-VISUAL DESIGN PRINCIPLES:
-- HIGH DATA-INK RATIO: Minimize chartjunk, maximize information density
-- PERCEPTUAL ACCURACY: Use position/length encodings over color/area when possible
-- CLEAR HIERARCHY: Guide attention through size, contrast, and positioning
-- CONTEXTUAL ANNOTATIONS: Include statistical summaries (mean, median, trends) when relevant
-
-CHART-SPECIFIC OPTIMIZATION:
-- BAR CHARTS: Sort by value, highlight key insights, use consistent baselines
-- LINE CHARTS: Show confidence intervals, trend lines, and seasonal patterns
-- SCATTER PLOTS: Include correlation coefficients, regression lines, density overlays
-- HISTOGRAMS: Optimize bin width using Freedman-Diaconis rule, show distribution statistics
-- PIE CHARTS: Limit to 5-6 segments, order by size, highlight largest segment
-- HEATMAPS: Use perceptually uniform color scales, include correlation values
-
-INTERACTIVITY & PERFORMANCE:
-- Implement hover tooltips with contextual statistics
-- Enable zoom/pan for dense datasets
-- Optimize rendering for sample sizes up to 10,000 points
-- Include download/export capabilities
-
-CRITICAL: Return ONLY complete Plotly.js JSON specification. Ensure mathematical accuracy and visual clarity.`
-};
+import { SYSTEM_PROMPTS } from './prompts';
 
 export function generateUUID(): string {
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
@@ -167,10 +64,10 @@ export function calculateColumnStats(data: any[], columnName: string, type: stri
       return acc;
     }, {} as Record<string, number>);
     
-    const sortedCounts = Object.entries(valueCounts).sort(([,a], [,b]) => b - a);
+    const sortedCounts = Object.entries(valueCounts).sort(([,a], [,b]) => (b as number) - (a as number));
     if (sortedCounts.length > 0) {
       stats.mode = sortedCounts[0][0];
-      stats.distribution = sortedCounts.slice(0, 10).map(([value, count]) => ({ value, count }));
+      stats.distribution = sortedCounts.slice(0, 10).map(([value, count]) => ({ value, count: count as number }));
     }
   }
   
@@ -356,14 +253,14 @@ function generateDetailedStats(schema: ColumnSchema[], sampleRows: any[]): any {
         return acc;
       }, {} as Record<string, number>);
       
-      const sortedCounts = Object.entries(valueCounts).sort(([,a], [,b]) => b - a);
+      const sortedCounts = Object.entries(valueCounts).sort(([,a], [,b]) => (b as number) - (a as number));
       const entropy = calculateEntropy(Object.values(valueCounts));
       
       stats.columnDetails[col.name] = {
         ...stats.columnDetails[col.name],
         topValues: sortedCounts.slice(0, 5),
         entropy: entropy,
-        concentrationRatio: sortedCounts.length > 0 ? sortedCounts[0][1] / nonEmptyValues.length : 0,
+        concentrationRatio: sortedCounts.length > 0 ? (sortedCounts[0][1] as number) / nonEmptyValues.length : 0,
         averageLength: nonEmptyValues.reduce((acc, val) => acc + val.toString().length, 0) / nonEmptyValues.length
       };
       
@@ -682,8 +579,8 @@ function hasSignificantVariation(categoryCol: ColumnSchema, numericCol: ColumnSc
     return acc;
   }, {} as Record<string, number[]>);
   
-  const groupMeans = Object.values(groups).map(values => 
-    values.reduce((a, b) => a + b, 0) / values.length
+  const groupMeans = Object.values(groups).map((values: number[]) => 
+    values.reduce((a: number, b: number) => a + b, 0) / values.length
   );
   
   if (groupMeans.length < 2) return false;
@@ -797,173 +694,9 @@ async function generateOptimalChart(recommendation: any, schema: ColumnSchema[],
   }
 }
 
-function generateNumericOverviewChart(numericCols: ColumnSchema[], sampleRows: any[]): any {
-  const means = numericCols.map(col => ({
-    name: col.name,
-    value: col.stats?.mean || 0
-  }));
-  
-  return {
-    data: [{
-      x: means.map(m => m.name),
-      y: means.map(m => m.value),
-      type: 'bar',
-      marker: {
-        color: ['#667eea', '#764ba2', '#f093fb', '#f5576c', '#4facfe', '#00f2fe'],
-        opacity: 0.8
-      },
-      name: 'Average Values'
-    }],
-    layout: {
-      title: {
-        text: 'Numeric Columns Overview',
-        font: { size: 16, color: '#333' }
-      },
-      xaxis: { title: 'Columns' },
-      yaxis: { title: 'Average Values' },
-      showlegend: false,
-      margin: { t: 50, b: 50, l: 50, r: 20 }
-    }
-  };
-}
 
-function generateCategoryDistributionChart(categoricalCol: ColumnSchema, sampleRows: any[]): any {
-  const counts = sampleRows.reduce((acc, row) => {
-    const value = row[categoricalCol.name];
-    acc[value] = (acc[value] || 0) + 1;
-    return acc;
-  }, {} as Record<string, number>);
-  
-  const sortedCounts = Object.entries(counts)
-    .sort(([,a], [,b]) => b - a)
-    .slice(0, 8); // Top 8 categories
-  
-  return {
-    data: [{
-      labels: sortedCounts.map(([label]) => label),
-      values: sortedCounts.map(([,value]) => value),
-      type: 'pie',
-      marker: {
-        colors: ['#667eea', '#764ba2', '#f093fb', '#f5576c', '#4facfe', '#00f2fe', '#43e97b', '#38f9d7']
-      },
-      textinfo: 'label+percent',
-      textposition: 'outside'
-    }],
-    layout: {
-      title: {
-        text: `${categoricalCol.name} Distribution`,
-        font: { size: 16, color: '#333' }
-      },
-      margin: { t: 50, b: 50, l: 50, r: 50 }
-    }
-  };
-}
 
-function generateCorrelationMatrix(numericCols: ColumnSchema[], sampleRows: any[]): any {
-  const correlations = calculateCorrelationMatrix(numericCols, sampleRows);
-  
-  return {
-    data: [{
-      z: correlations.matrix,
-      x: correlations.labels,
-      y: correlations.labels,
-      type: 'heatmap',
-      colorscale: 'RdBu',
-      zmid: 0,
-      colorbar: {
-        title: 'Correlation',
-        thickness: 15
-      }
-    }],
-    layout: {
-      title: {
-        text: 'Correlation Matrix',
-        font: { size: 16, color: '#333' }
-      },
-      xaxis: { title: 'Variables' },
-      yaxis: { title: 'Variables' },
-      margin: { t: 80, b: 80, l: 80, r: 80 }
-    }
-  };
-}
 
-function generateTimeSeriesChart(dateCol: ColumnSchema, numericCol: ColumnSchema, sampleRows: any[]): any {
-  const sortedData = sampleRows
-    .filter(row => row[dateCol.name] && row[numericCol.name])
-    .sort((a, b) => new Date(a[dateCol.name]).getTime() - new Date(b[dateCol.name]).getTime());
-  
-  return {
-    data: [{
-      x: sortedData.map(row => row[dateCol.name]),
-      y: sortedData.map(row => row[numericCol.name]),
-      type: 'scatter',
-      mode: 'lines+markers',
-      line: { color: '#667eea', width: 3 },
-      marker: { color: '#764ba2', size: 6 },
-      name: numericCol.name
-    }],
-    layout: {
-      title: {
-        text: `${numericCol.name} Over Time`,
-        font: { size: 16, color: '#333' }
-      },
-      xaxis: { title: dateCol.name },
-      yaxis: { title: numericCol.name },
-      margin: { t: 50, b: 50, l: 60, r: 20 }
-    }
-  };
-}
-
-function generateDistributionChart(numericCol: ColumnSchema, sampleRows: any[]): any {
-  const values = sampleRows
-    .map(row => row[numericCol.name])
-    .filter(val => val != null && !isNaN(Number(val)))
-    .map(val => Number(val));
-  
-  return {
-    data: [{
-      x: values,
-      type: 'histogram',
-      marker: {
-        color: '#667eea',
-        opacity: 0.7,
-        line: { color: '#764ba2', width: 1 }
-      },
-      name: 'Distribution'
-    }],
-    layout: {
-      title: {
-        text: `${numericCol.name} Distribution`,
-        font: { size: 16, color: '#333' }
-      },
-      xaxis: { title: numericCol.name },
-      yaxis: { title: 'Frequency' },
-      margin: { t: 50, b: 50, l: 50, r: 20 }
-    }
-  };
-}
-
-function calculateCorrelationMatrix(numericCols: ColumnSchema[], sampleRows: any[]): { matrix: number[][], labels: string[] } {
-  const labels = numericCols.map(col => col.name);
-  const matrix: number[][] = [];
-  
-  for (let i = 0; i < numericCols.length; i++) {
-    matrix[i] = [];
-    for (let j = 0; j < numericCols.length; j++) {
-      if (i === j) {
-        matrix[i][j] = 1;
-      } else {
-        const corr = calculateCorrelation(
-          sampleRows.map(row => Number(row[numericCols[i].name])).filter(v => !isNaN(v)),
-          sampleRows.map(row => Number(row[numericCols[j].name])).filter(v => !isNaN(v))
-        );
-        matrix[i][j] = corr;
-      }
-    }
-  }
-  
-  return { matrix, labels };
-}
 
 function calculateCorrelation(x: number[], y: number[]): number {
   const n = Math.min(x.length, y.length);
@@ -1549,59 +1282,7 @@ export async function analyzeWithDuckDB(
   }
 }
 
-async function generateSingleChart(prompt: string, schema: ColumnSchema[], sampleRows: any[], env: any): Promise<any> {
-  const chartPrompt = `${SYSTEM_PROMPTS.CHART_GENERATION}
 
-DIRECT CHART GENERATION REQUEST:
-
-USER'S VISUALIZATION REQUEST: "${prompt}"
-
-DATASET SCHEMA & STATISTICS:
-${JSON.stringify(schema.map(col => ({name: col.name, type: col.type, stats: col.stats})), null, 2)}
-
-SAMPLE DATA FOR CHART CREATION:
-${JSON.stringify(sampleRows.slice(0, 8), null, 2)}
-
-IMPLEMENTATION REQUIREMENTS:
-- Analyze the user request to determine optimal chart type and variables
-- Use actual sample data values to populate the chart arrays
-- Apply professional styling with gradient color palette starting with #667eea
-- Create descriptive titles and axis labels that tell the data story
-- Ensure chart maximizes insight discovery and visual clarity
-- Follow modern visualization best practices for the chosen chart type
-
-CRITICAL: Return ONLY the complete Plotly.js JSON specification. No explanations, no markdown, no additional text.`;
-
-  try {
-    const response = await env.AI.run('@cf/qwen/qwq-32b', {
-      prompt: chartPrompt,
-      max_tokens: 512
-    });
-    
-    let responseText = response.response || response.choices?.[0]?.text || response;
-    if (typeof responseText === 'string') {
-      responseText = responseText.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
-      
-      // Handle QwQ model's thinking process output
-      const thinkEndIndex = responseText.lastIndexOf('</think>');
-      if (thinkEndIndex !== -1) {
-        responseText = responseText.substring(thinkEndIndex + 8).trim();
-      }
-      
-      // Extract JSON object if there's extra text
-      const jsonStart = responseText.indexOf('{');
-      const jsonEnd = responseText.lastIndexOf('}');
-      if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
-        responseText = responseText.substring(jsonStart, jsonEnd + 1);
-      }
-    }
-    
-    return JSON.parse(responseText);
-  } catch (error) {
-    console.error('Single chart generation failed:', error);
-    return createFallbackChart(schema, sampleRows);
-  }
-}
 
 async function createFallbackAnalysis(schema: ColumnSchema[], sampleRows: any[]): Promise<DataAnalysis> {
   const numericColumns = schema.filter(col => col.type === 'number');
