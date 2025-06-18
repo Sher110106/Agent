@@ -1,21 +1,58 @@
 import { Env } from './types';
 import { uploadCsvHandler, queryHandler } from './handlers';
+import { isAuthenticated, handleLogin, handleLogout, getLoginPageHtml } from './auth';
 
 export default {
   async fetch(request: Request, env: Env, ctx: any): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
 
+    // Handle CORS preflight requests
     if (request.method === 'OPTIONS') {
       return new Response(null, {
         headers: {
           'Access-Control-Allow-Origin': '*',
           'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type',
+          'Access-Control-Allow-Headers': 'Content-Type, Authorization',
         },
       });
     }
 
+    // Handle login endpoint (no authentication required)
+    if (path === '/login' && request.method === 'POST') {
+      return handleLogin(request, env);
+    }
+
+    // Handle logout endpoint
+    if (path === '/logout' && request.method === 'POST') {
+      return handleLogout(request, env);
+    }
+
+    // Check authentication for all other routes
+    const authenticated = await isAuthenticated(request, env);
+
+    // If not authenticated and trying to access protected routes, show login page
+    if (!authenticated) {
+      if (path === '/' && request.method === 'GET') {
+        return new Response(getLoginPageHtml(), {
+          headers: { 'Content-Type': 'text/html' }
+        });
+      }
+      
+      // For API endpoints, return 401
+      return new Response(JSON.stringify({ 
+        error: 'Authentication required',
+        message: 'Please log in to access this resource'
+      }), {
+        status: 401,
+        headers: { 
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*'
+        }
+      });
+    }
+
+    // Protected routes - user is authenticated
     if (path === '/upload' && request.method === 'POST') {
       return uploadCsvHandler(request, env);
     }
@@ -40,7 +77,7 @@ function getIndexHtml(): string {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CSV AI Agent - Professional Data Analytics Platform</title>
+    <title>Business Analysis HR Agent - Professional Data Analytics Platform</title>
     <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
     <style>
@@ -661,9 +698,16 @@ function getIndexHtml(): string {
                     <i data-lucide="bar-chart-3"></i>
                 </div>
                 <div>
-                    <h1>CSV AI Agent</h1>
+                    <h1>Business Analysis HR Agent</h1>
                     <p class="subtitle">Professional Data Analytics Platform</p>
                 </div>
+            </div>
+            <div style="display: flex; align-items: center; gap: 1rem;">
+                <span style="color: var(--gray-600); font-size: 0.875rem;">Welcome, Plaksha-HR</span>
+                <button onclick="logout()" class="btn btn-secondary" style="padding: 0.5rem 1rem;">
+                    <i data-lucide="log-out" style="width: 1rem; height: 1rem;"></i>
+                    Logout
+                </button>
             </div>
         </div>
     </div>
@@ -807,8 +851,16 @@ Examples:
             formData.append('file', fileInput.files[0]);
 
             try {
+                // Get session ID for authentication
+                const sessionId = localStorage.getItem('sessionId');
+                const headers = {};
+                if (sessionId) {
+                    headers['Authorization'] = 'Bearer ' + sessionId;
+                }
+
                 const response = await fetch('/upload', {
                     method: 'POST',
+                    headers: headers,
                     body: formData
                 });
 
@@ -934,9 +986,16 @@ Examples:
             statusDiv.innerHTML = '<div class="status info"><div class="loading-spinner"></div>AI is analyzing your request...</div>';
 
             try {
+                // Get session ID for authentication
+                const sessionId = localStorage.getItem('sessionId');
+                const headers = { 'Content-Type': 'application/json' };
+                if (sessionId) {
+                    headers['Authorization'] = 'Bearer ' + sessionId;
+                }
+
                 const response = await fetch('/query', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: headers,
                     body: JSON.stringify({
                         datasetId: currentDatasetId,
                         prompt: promptInput.value
@@ -944,6 +1003,14 @@ Examples:
                 });
 
                 const result = await response.json();
+
+                // Handle authentication errors
+                if (response.status === 401) {
+                    // Session expired or invalid, redirect to login
+                    localStorage.removeItem('sessionId');
+                    window.location.href = '/';
+                    return;
+                }
 
                 if (response.ok) {
                     statusDiv.innerHTML = '<div class="status success"><i data-lucide="check-circle"></i>AI analysis complete! Chart generated successfully!</div>';
@@ -954,8 +1021,14 @@ Examples:
                         showReasoning(result.reasoning);
                     }
                     
-                    // Show the generated chart
-                    showChart(result.chartSpec);
+                    // Show the generated chart only if chartSpec is valid
+                    if (result.chartSpec && result.chartSpec.data && Array.isArray(result.chartSpec.data)) {
+                        showChart(result.chartSpec);
+                    } else {
+                        console.error('No valid chart specification received:', result.chartSpec);
+                        statusDiv.innerHTML = '<div class="status warning"><i data-lucide="alert-triangle"></i>AI analysis completed but could not generate a valid chart. Please try a different query or check the data format.</div>';
+                        lucide.createIcons();
+                    }
                     
                 } else {
                     statusDiv.innerHTML = '<div class="status error"><i data-lucide="x-circle"></i>Query failed: ' + result.error + '</div>';
@@ -1084,6 +1157,23 @@ Examples:
             const chartSection = document.getElementById('chartSection');
             const chartContainer = document.getElementById('chartContainer');
             
+            // Validate chartSpec before proceeding
+            if (!chartSpec) {
+                console.error('No chart specification provided to showChart');
+                chartContainer.innerHTML = '<div style="padding: 40px; text-align: center; color: var(--gray-500); background: var(--gray-50); border-radius: var(--border-radius-lg);"><i data-lucide="alert-circle" style="width: 2rem; height: 2rem; margin-bottom: 1rem;"></i><h3>No Chart Data</h3><p>No chart specification was provided.</p></div>';
+                chartSection.style.display = 'block';
+                lucide.createIcons();
+                return;
+            }
+            
+            if (!chartSpec.data || !Array.isArray(chartSpec.data) || chartSpec.data.length === 0) {
+                console.error('Invalid chart specification - missing or empty data array');
+                chartContainer.innerHTML = '<div style="padding: 40px; text-align: center; color: var(--gray-500); background: var(--gray-50); border-radius: var(--border-radius-lg);"><i data-lucide="alert-circle" style="width: 2rem; height: 2rem; margin-bottom: 1rem;"></i><h3>Invalid Chart Data</h3><p>The chart specification is missing valid data.</p><details style="margin-top: 20px; text-align: left;"><summary style="cursor: pointer; font-weight: 600; color: var(--primary-600);">View Chart Specification</summary><pre style="background: white; padding: 15px; border-radius: 8px; overflow: auto; margin-top: 10px; font-size: 12px; border: 1px solid var(--gray-200);">' + JSON.stringify(chartSpec, null, 2) + '</pre></details></div>';
+                chartSection.style.display = 'block';
+                lucide.createIcons();
+                return;
+            }
+            
             try {
                 // Clear any existing chart
                 chartContainer.innerHTML = '<div id="customChart" style="height: 500px;"></div>';
@@ -1189,6 +1279,40 @@ Examples:
                 lucide.createIcons();
             }
         }
+
+        // Logout function
+        async function logout() {
+            try {
+                const response = await fetch('/logout', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                if (response.ok) {
+                    // Clear localStorage
+                    localStorage.removeItem('sessionId');
+                    // Redirect to login
+                    window.location.href = '/';
+                } else {
+                    console.error('Logout failed');
+                    // Still redirect to force re-authentication
+                    window.location.href = '/';
+                }
+            } catch (error) {
+                console.error('Logout error:', error);
+                // Redirect anyway to ensure user is logged out
+                window.location.href = '/';
+            }
+        }
+
+        // Check session on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            // This ensures the user has a valid session
+            // If not, they would have been redirected to login by the server
+            console.log('Authenticated user session active');
+        });
     </script>
 </body>
 </html>`;

@@ -17,3 +17,9 @@ bucket_name = "csv-ai-agent-data"
 
 [vars]
 ENVIRONMENT = "production"
+# NVIDIA_API_KEY is now set as a secret via: wrangler secret put NVIDIA_API_KEY
+
+# Add NVIDIA API key as a secret variable
+# Run: wrangler secret put NVIDIA_API_KEY
+# Or set in wrangler.toml vars section for development:
+# NVIDIA_API_KEY = "your_key_here"

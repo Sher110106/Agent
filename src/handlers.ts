@@ -1,7 +1,15 @@
 import * as Papa from 'papaparse';
-import { Env, UploadResponse, QueryRequest, QueryResponse } from './types';
+import { Env, UploadResponse, QueryRequest, QueryResponse, ColumnSchema } from './types';
 import { generateUUID, inferSchema, createFallbackChart, analyzeDataWithAI, analyzeWithDuckDB } from './utils';
 import { SYSTEM_PROMPTS } from './prompts';
+import { 
+  createNvidiaClient, 
+  CodeGenerationAgent, 
+  ExecutionAgent, 
+  ReasoningAgent, 
+  DataInsightAgent,
+  DashboardGenerationAgent
+} from './agents';
 
 export async function uploadCsvHandler(request: Request, env: Env): Promise<Response> {
   console.log("📥 uploadCsvHandler v2: Phase 1 upgrade with DuckDB and R2 storage");
@@ -77,12 +85,69 @@ export async function uploadCsvHandler(request: Request, env: Env): Promise<Resp
     const duckDbAnalysis = await analyzeWithDuckDB(data, env);
     console.log("✅ Enhanced statistical analysis completed");
     
-    // 6. Perform the higher-level AI analysis (as before)
-    // The AI now gets a much richer context from the enhanced statistical analysis!
-    console.log("🔍 Starting AI analysis with enhanced statistical context...");
-    const analysis = await analyzeDataWithAI(schema, sampleRows, env);
-    analysis.duckDbAnalysis = duckDbAnalysis; // Attach enhanced statistical results
-    console.log("✅ AI analysis completed with enhanced context");
+    // 6. Perform the higher-level AI analysis using NVIDIA agents
+    console.log("🔍 Starting NVIDIA AI analysis with enhanced statistical context...");
+    let analysis;
+    
+    if (env.NVIDIA_API_KEY) {
+      try {
+        console.log(`🔑 Using NVIDIA API for enhanced dataset analysis`);
+        const nvidiaClient = createNvidiaClient(env.NVIDIA_API_KEY);
+        
+        // Enhanced insights
+        const insights = await DataInsightAgent(schema, sampleRows, nvidiaClient);
+        
+        // Base analysis with traditional method
+        analysis = await analyzeDataWithAI(schema, sampleRows, env);
+        analysis.summary = insights; // Replace summary with NVIDIA insights
+        analysis.duckDbAnalysis = duckDbAnalysis;
+        
+        // NVIDIA-powered intelligent dashboard (use full data for better charts)
+        console.log("🎨 Generating NVIDIA-powered intelligent dashboard...");
+        const intelligentCharts = await DashboardGenerationAgent(schema, data, analysis, nvidiaClient);
+        analysis.autoCharts = intelligentCharts;
+        
+        console.log("✅ NVIDIA-enhanced AI analysis completed");
+      } catch (error) {
+        console.error("⚠️ NVIDIA API failed, falling back to Cloudflare AI:", error);
+        analysis = await analyzeDataWithAI(schema, sampleRows, env);
+        analysis.duckDbAnalysis = duckDbAnalysis;
+        
+        // Ensure auto charts have the correct structure for error fallback case
+        if (analysis.autoCharts && analysis.autoCharts.length > 0) {
+          analysis.autoCharts = analysis.autoCharts.map(chart => {
+            if (!chart.title && chart.chartSpec) {
+              return {
+                title: 'Data Visualization',
+                description: 'Chart generated from your data',
+                chartSpec: chart.chartSpec,
+                priority: chart.priority || 1
+              };
+            }
+            return chart;
+          });
+        }
+      }
+    } else {
+      console.log("⚠️ No NVIDIA API key found, using Cloudflare AI");
+      analysis = await analyzeDataWithAI(schema, sampleRows, env);
+      analysis.duckDbAnalysis = duckDbAnalysis;
+      
+      // Ensure auto charts have the correct structure for fallback case
+      if (analysis.autoCharts && analysis.autoCharts.length > 0) {
+        analysis.autoCharts = analysis.autoCharts.map(chart => {
+          if (!chart.title && chart.chartSpec) {
+            return {
+              title: 'Data Visualization',
+              description: 'Chart generated from your data',
+              chartSpec: chart.chartSpec,
+              priority: chart.priority || 1
+            };
+          }
+          return chart;
+        });
+      }
+    }
     
     // 7. Store metadata in KV (the large data is now in R2)
     console.log("💾 Storing metadata in KV...");
@@ -115,11 +180,11 @@ export async function uploadCsvHandler(request: Request, env: Env): Promise<Resp
     
   } catch (error) {
     console.error("❌ Upload error:", error);
-    console.error("❌ Error stack:", error.stack);
+    console.error("❌ Error stack:", error instanceof Error ? error.stack : 'No stack trace available');
     
     return new Response(JSON.stringify({ 
       error: 'Internal server error',
-      details: error.message,
+      details: error instanceof Error ? error.message : 'Unknown error occurred',
       timestamp: new Date().toISOString()
     }), {
       status: 500,
@@ -128,98 +193,21 @@ export async function uploadCsvHandler(request: Request, env: Env): Promise<Resp
   }
 }
 
-async function performAIReasoning(prompt: string, schema: any[], sampleRows: any[], analysis: any, env: any): Promise<any> {
-  const reasoningPrompt = `${SYSTEM_PROMPTS.REASONING_ANALYSIS}
-
-VISUALIZATION REASONING REQUEST:
-
-USER'S REQUEST: "${prompt}"
-
-DATASET SCHEMA & CONTEXT:
-${JSON.stringify(schema.map(col => ({name: col.name, type: col.type, stats: col.stats})), null, 2)}
-
-SAMPLE DATA FOR REFERENCE:
-${JSON.stringify(sampleRows.slice(0, 8), null, 2)}
-
-${analysis ? `EXISTING ANALYSIS INSIGHTS:
-Summary: ${analysis.summary}
-Key Patterns: ${analysis.insights.slice(0, 3).join(' | ')}
-Data Quality: ${analysis.dataQuality.completeness}% complete
-${analysis.patterns ? `Detected Patterns: ${analysis.patterns.trends.concat(analysis.patterns.distributions.map(d => `${d.column} distribution`)).join(', ')}` : ''}
-${analysis.businessInsights ? `Business Context: ${analysis.businessInsights.slice(0, 2).join(' | ')}` : ''}
-` : ''}
-
-REQUIRED JSON OUTPUT FORMAT:
-{
-  "reasoning": "Step-by-step analysis of user intent, data characteristics, and optimal visualization strategy",
-  "recommendedChartType": "single_best_chart_type",
-  "primaryVariables": ["most_relevant_column1", "most_relevant_column2"],
-  "considerations": ["data_suitability_factor", "visualization_best_practice", "user_intent_factor"],
-  "dataInsights": "how the data characteristics inform this visualization choice",
-  "alternativeApproaches": ["alternative_chart_type_1", "alternative_chart_type_2"],
-  "expectedOutcome": "specific insights the user will gain from this visualization"
-}
-
-ANALYSIS FRAMEWORK:
-1. Parse user intent - what specific question are they trying to answer?
-2. Evaluate data fitness - which columns best support this analysis?
-3. Apply visualization principles - what chart type maximizes clarity and insight?
-4. Consider data limitations - any quality issues or constraints?
-5. Predict value - what actionable insights will this reveal?`;
-
-  try {
-    const response = await env.AI.run('@cf/qwen/qwq-32b', {
-      prompt: reasoningPrompt,
-      max_tokens: 4000
-    });
-    
-    let responseText = response.response || response.choices?.[0]?.text || response;
-    if (typeof responseText === 'string') {
-      responseText = responseText.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
-      
-      // Handle QwQ model's thinking process output
-      const thinkEndIndex = responseText.lastIndexOf('</think>');
-      if (thinkEndIndex !== -1) {
-        responseText = responseText.substring(thinkEndIndex + 8).trim();
-      }
-      
-      // Extract JSON object if there's extra text
-      const jsonStart = responseText.indexOf('{');
-      const jsonEnd = responseText.lastIndexOf('}');
-      if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
-        responseText = responseText.substring(jsonStart, jsonEnd + 1);
-      }
-    }
-    
-    const reasoning = JSON.parse(responseText);
-    console.log("🧠 AI Reasoning:", reasoning.reasoning);
-    return reasoning;
-    
-  } catch (error) {
-    console.error('AI reasoning failed:', error);
-    return {
-      reasoning: "Analyzing user request for appropriate visualization approach",
-      recommendedChartType: "bar",
-      primaryVariables: schema.filter(col => col.type === 'number').slice(0, 2).map(col => col.name),
-      considerations: ["Data availability", "Chart readability", "User intent"],
-      dataInsights: "Basic data overview needed",
-      alternativeApproaches: ["histogram", "scatter"],
-      expectedOutcome: "Visual representation of the requested data pattern"
-    };
-  }
-}
+// This function is replaced by the NVIDIA agent workflow
+// Keeping for backwards compatibility but functionality moved to agents.ts
 
 export async function queryHandler(request: Request, env: Env): Promise<Response> {
-  console.log("🔍 queryHandler: request:", request.url);
+  console.log("🔍 queryHandler: NVIDIA Agent-based processing");
   
   try {
-    const { datasetId, prompt }: QueryRequest = await request.json();
+    const requestData = await request.json() as QueryRequest;
+    const { datasetId, prompt } = requestData;
     console.log("Using dataset:", datasetId, "prompt:", prompt);
     
-    const [schemaStr, sampleRowsStr, analysisStr] = await Promise.all([
+    const [schemaStr, sampleRowsStr, dataStr] = await Promise.all([
       env.KV.get(`${datasetId}:schema`),
       env.KV.get(`${datasetId}:sample`),
-      env.KV.get(`${datasetId}:analysis`)
+      env.R2_BUCKET.get(datasetId)
     ]);
     
     if (!schemaStr || !sampleRowsStr) {
@@ -231,98 +219,116 @@ export async function queryHandler(request: Request, env: Env): Promise<Response
     
     const schema = JSON.parse(schemaStr);
     const sampleRows = JSON.parse(sampleRowsStr);
-    const analysis = analysisStr ? JSON.parse(analysisStr) : null;
+    let fullData = sampleRows; // Default to sample if full data not available
     
-    // Step 1: AI Reasoning/Thinking Phase
-    console.log("🤔 AI is analyzing the request and data context...");
-    const reasoningResponse = await performAIReasoning(prompt, schema, sampleRows, analysis, env);
-    console.log("✅ AI reasoning completed:", reasoningResponse.reasoning);
-    
-    // Step 2: Chart Generation with Reasoning Context
-    console.log("🎨 Generating chart based on AI reasoning...");
-    const structuredPrompt = `${SYSTEM_PROMPTS.CHART_GENERATION}
-
-CHART IMPLEMENTATION REQUEST:
-
-USER'S ORIGINAL REQUEST: "${prompt}"
-
-PREVIOUS AI REASONING ANALYSIS:
-Reasoning: ${reasoningResponse.reasoning}
-Recommended Chart Type: ${reasoningResponse.recommendedChartType}
-Primary Variables: ${reasoningResponse.primaryVariables.join(', ')}
-Key Considerations: ${reasoningResponse.considerations.join(', ')}
-Expected Outcome: ${reasoningResponse.expectedOutcome}
-
-DATASET SCHEMA WITH STATISTICS:
-${JSON.stringify(schema.map(col => ({name: col.name, type: col.type, stats: col.stats})), null, 2)}
-
-SAMPLE DATA FOR IMPLEMENTATION:
-${JSON.stringify(sampleRows.slice(0, 10), null, 2)}
-
-${analysis ? `STATISTICAL CONTEXT TO INCORPORATE:
-Business Insights: ${analysis.insights.slice(0, 3).join(' | ')}
-${analysis.patterns ? `
-Key Patterns:
-- Trends: ${analysis.patterns.trends.join(', ')}
-- Distributions: ${analysis.patterns.distributions.map(d => `${d.column} (${d.type})`).join(', ')}
-` : ''}` : ''}
-
-IMPLEMENTATION REQUIREMENTS:
-- Chart Type: ${reasoningResponse.recommendedChartType}
-- Primary Variables: ${reasoningResponse.primaryVariables.join(' and ')}
-- Use actual sample data values to populate x/y arrays
-- Apply professional styling with gradient colors starting with #667eea
-- Include meaningful titles and axis labels based on the analysis context
-- Ensure chart tells the story identified in the reasoning phase
-
-RETURN ONLY PLOTLY.JS JSON SPECIFICATION - NO MARKDOWN, NO EXPLANATIONS:`;
-
-    const aiResponse = await env.AI.run('@cf/qwen/qwq-32b', {
-      prompt: structuredPrompt,
-      max_tokens: 1024
-    });
-    
-    console.log("LLM response received");
-    
-    let chartSpec;
-    try {
-      let responseText = aiResponse.response || aiResponse.choices?.[0]?.text || aiResponse;
-      
-      // Clean up the response - remove markdown code blocks, thinking tags, and extra text
-      if (typeof responseText === 'string') {
-        responseText = responseText.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
-        
-        // Handle QwQ model's thinking process output
-        const thinkEndIndex = responseText.lastIndexOf('</think>');
-        if (thinkEndIndex !== -1) {
-          responseText = responseText.substring(thinkEndIndex + 8).trim();
-        }
-        
-        // Extract JSON object if there's extra text
-        const jsonStart = responseText.indexOf('{');
-        const jsonEnd = responseText.lastIndexOf('}');
-        if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
-          responseText = responseText.substring(jsonStart, jsonEnd + 1);
-        }
+    if (dataStr) {
+      try {
+        const dataText = await dataStr.text();
+        fullData = JSON.parse(dataText);
+        console.log(`📊 Loaded full dataset: ${fullData.length} rows`);
+      } catch (error) {
+        console.warn("⚠️ Could not load full dataset, using sample data");
       }
-      
-      console.debug("Cleaned AI response:", responseText);
-      chartSpec = JSON.parse(responseText);
-    } catch (parseError) {
-      console.error("Failed to parse AI response:", parseError);
-      console.error("Raw AI response:", aiResponse);
-      
-      // Use fallback chart when AI response parsing fails
-      console.log("Using fallback chart generation");
-      chartSpec = createFallbackChart(schema, sampleRows);
     }
     
-    console.debug("Parsed chart spec:", chartSpec);
+    // Use NVIDIA agents if API key is available
+    if (env.NVIDIA_API_KEY) {
+      try {
+        console.log("🤖 Starting NVIDIA agent workflow...");
+        console.log(`🔑 Using NVIDIA API for enhanced analysis`);
+        const nvidiaClient = createNvidiaClient(env.NVIDIA_API_KEY);
+        
+        // Step 1: Code Generation
+        console.log("🔧 CodeGenerationAgent: Generating code...");
+        const codeResult = await CodeGenerationAgent(prompt, schema, nvidiaClient);
+        
+        if (codeResult.error) {
+          throw new Error(`Code generation failed: ${codeResult.error}`);
+        }
+        
+        // Step 2: Code Execution 
+        console.log("⚡ ExecutionAgent: Executing code...");
+        const executionResult = ExecutionAgent(codeResult.code, fullData, codeResult.shouldPlot);
+        
+        if (executionResult.error) {
+          throw new Error(`Code execution failed: ${executionResult.error}`);
+        }
+        
+        // Step 3: Reasoning and Explanation
+        console.log("🧠 ReasoningAgent: Generating insights...");
+        const reasoningResult = await ReasoningAgent(prompt, executionResult.result, nvidiaClient);
+        
+        // Extract chart specification from the execution result
+        let chartSpec = null;
+        if (executionResult.result && executionResult.result.chartSpec) {
+          chartSpec = executionResult.result.chartSpec;
+          
+          // Validate chart spec has required properties
+          if (!chartSpec.data || !Array.isArray(chartSpec.data) || chartSpec.data.length === 0) {
+            console.error("❌ Invalid chart spec: missing or empty data array");
+            chartSpec = null;
+          } else {
+            console.log("✅ Valid chart spec extracted with", chartSpec.data.length, "data series");
+          }
+        } else {
+          console.warn("⚠️ No chart spec found in execution result:", executionResult.result);
+        }
+        
+        const response: QueryResponse = {
+          chartSpec: chartSpec,
+          reasoning: {
+            reasoning: reasoningResult.explanation,
+            recommendedChartType: codeResult.shouldPlot ? 'Generated from AI code' : 'Data analysis',
+            primaryVariables: [], // Could extract from code analysis
+            considerations: [reasoningResult.thinking],
+            dataInsights: reasoningResult.explanation,
+            alternativeApproaches: [],
+            expectedOutcome: 'Interactive visualization based on your query'
+          },
+          code: codeResult.code,
+          result: executionResult.result,
+          shouldPlot: codeResult.shouldPlot,
+          thinking: reasoningResult.thinking,
+          explanation: reasoningResult.explanation,
+          logs: [
+            'NVIDIA agents workflow completed successfully',
+            'Code generated and executed',
+            'Chart specification extracted and validated',
+            'Reasoning and insights generated'
+          ]
+        };
+        
+        console.log("✅ NVIDIA agent workflow completed successfully");
+        
+        return new Response(JSON.stringify(response), {
+          headers: {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*'
+          }
+        });
+        
+      } catch (nvidiaError) {
+        console.error("❌ NVIDIA agent workflow failed:", nvidiaError);
+        console.log("🔄 Falling back to traditional chart generation...");
+      }
+    }
+    
+    // Fallback to traditional chart generation
+    console.log("📊 Using traditional chart generation as fallback...");
+    const fallbackChartSpec = createFallbackChart(schema, sampleRows);
     
     const response: QueryResponse = {
-      chartSpec,
-      reasoning: reasoningResponse,
-      logs: ['AI reasoning completed', 'Chart specification generated successfully']
+      chartSpec: fallbackChartSpec,
+      reasoning: {
+        reasoning: "Generated a fallback visualization based on your data structure",
+        recommendedChartType: "Fallback chart",
+        primaryVariables: schema.map((col: ColumnSchema) => col.name).slice(0, 2),
+        considerations: ["Used fallback generation due to AI processing unavailability"],
+        dataInsights: "Basic chart generated from dataset structure",
+        alternativeApproaches: [],
+        expectedOutcome: "Simple visualization of your data"
+      },
+      logs: ['Used fallback chart generation due to NVIDIA API unavailability']
     };
     
     return new Response(JSON.stringify(response), {

@@ -694,10 +694,6 @@ async function generateOptimalChart(recommendation: any, schema: ColumnSchema[],
   }
 }
 
-
-
-
-
 function calculateCorrelation(x: number[], y: number[]): number {
   const n = Math.min(x.length, y.length);
   if (n < 2) return 0;
@@ -720,6 +716,8 @@ function calculateCorrelation(x: number[], y: number[]): number {
   const denominator = Math.sqrt(sumXSquared * sumYSquared);
   return denominator === 0 ? 0 : numerator / denominator;
 }
+
+export { calculateCorrelation };
 
 // Advanced chart generation functions
 function generateAdvancedTimeSeriesChart(dateCol: ColumnSchema, numericCol: ColumnSchema, sampleRows: any[]): any {
@@ -1281,8 +1279,6 @@ export async function analyzeWithDuckDB(
     };
   }
 }
-
-
 
 async function createFallbackAnalysis(schema: ColumnSchema[], sampleRows: any[]): Promise<DataAnalysis> {
   const numericColumns = schema.filter(col => col.type === 'number');

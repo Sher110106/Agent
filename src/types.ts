@@ -2,6 +2,31 @@ export interface Env {
   AI: any;
   KV: KVNamespace;
   R2_BUCKET: R2Bucket;
+  NVIDIA_API_KEY?: string;
+}
+
+// Authentication interfaces
+export interface AuthCredentials {
+  username: string;
+  password: string;
+}
+
+export interface AuthSession {
+  sessionId: string;
+  username: string;
+  createdAt: string;
+  expiresAt: string;
+}
+
+export interface LoginRequest {
+  username: string;
+  password: string;
+}
+
+export interface LoginResponse {
+  success: boolean;
+  sessionId?: string;
+  error?: string;
 }
 
 export interface ColumnSchema {
@@ -73,7 +98,8 @@ export interface DataAnalysis {
   autoCharts: Array<{
     title: string;
     description: string;
-    chartSpec: any;
+    chartSpec?: any;
+    code?: string;
     priority: number;
   }>;
   duckDbAnalysis?: DuckDBAnalysis; // Add this optional field
@@ -85,7 +111,7 @@ export interface QueryRequest {
 }
 
 export interface QueryResponse {
-  chartSpec: any;
+  chartSpec?: any;
   reasoning?: {
     reasoning: string;
     recommendedChartType: string;
@@ -96,5 +122,56 @@ export interface QueryResponse {
     expectedOutcome: string;
   };
   code?: string;
+  result?: any;
+  shouldPlot?: boolean;
+  error?: string;
+  thinking?: string;
+  explanation?: string;
   logs: string[];
+}
+
+// NVIDIA Agent interfaces
+export interface NvidiaClient {
+  chat: {
+    completions: {
+      create: (params: NvidiaCompletionParams) => Promise<NvidiaCompletionResponse>;
+    };
+  };
+}
+
+export interface NvidiaCompletionParams {
+  model: string;
+  messages: Array<{
+    role: string;
+    content: string;
+  }>;
+  temperature?: number;
+  max_tokens?: number;
+  stream?: boolean;
+}
+
+export interface NvidiaCompletionResponse {
+  choices: Array<{
+    message: {
+      content: string;
+    };
+  }>;
+}
+
+// Agent result interfaces
+export interface CodeGenerationResult {
+  code: string;
+  shouldPlot: boolean;
+  error?: string;
+}
+
+export interface ExecutionResult {
+  result: any;
+  error?: string;
+}
+
+export interface ReasoningResult {
+  thinking: string;
+  explanation: string;
+  error?: string;
 }

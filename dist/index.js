@@ -474,7 +474,7 @@ var require_papaparse_min = __commonJS({
 // src/handlers.ts
 var Papa = __toESM(require_papaparse_min());
 
-// src/utils.ts
+// src/prompts.ts
 var SYSTEM_PROMPTS = {
   DATA_ANALYSIS: `You are a Senior Data Scientist and Business Intelligence Expert specializing in automated data discovery and insight generation.
 
@@ -574,6 +574,8 @@ INTERACTIVITY & PERFORMANCE:
 
 CRITICAL: Return ONLY complete Plotly.js JSON specification. Ensure mathematical accuracy and visual clarity.`
 };
+
+// src/utils.ts
 function generateUUID() {
   return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, function(c) {
     const r = Math.random() * 16 | 0;
@@ -1786,90 +1788,1294 @@ function createFallbackChart(schema, sampleRows) {
 }
 __name(createFallbackChart, "createFallbackChart");
 
-// src/handlers.ts
-var SYSTEM_PROMPTS2 = {
-  REASONING_ANALYSIS: `You are an Expert Data Visualization Strategist and UX Designer specializing in choosing optimal chart types for data storytelling.
+// src/agents.ts
+var NVIDIA_MODEL = "nvidia/llama-3.1-nemotron-ultra-253b-v1";
+function createNvidiaClient(apiKey) {
+  return {
+    chat: {
+      completions: {
+        create: /* @__PURE__ */ __name(async (params) => {
+          const response = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${apiKey}`,
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              model: params.model,
+              messages: params.messages,
+              temperature: params.temperature || 0.2,
+              max_tokens: params.max_tokens || 1024,
+              stream: params.stream || false
+            })
+          });
+          if (!response.ok) {
+            throw new Error(`NVIDIA API error: ${response.status} ${response.statusText}`);
+          }
+          return await response.json();
+        }, "create")
+      }
+    }
+  };
+}
+__name(createNvidiaClient, "createNvidiaClient");
+async function QueryUnderstandingTool(query, client) {
+  try {
+    const messages = [
+      {
+        role: "system",
+        content: "detailed thinking off. You are an assistant that determines if a query is requesting a data visualization. Respond with only 'true' if the query is asking for a plot, chart, graph, or any visual representation of data. Otherwise, respond with 'false'."
+      },
+      {
+        role: "user",
+        content: query
+      }
+    ];
+    const response = await client.chat.completions.create({
+      model: NVIDIA_MODEL,
+      messages,
+      temperature: 0.1,
+      max_tokens: 5
+    });
+    const intent_response = response.choices[0].message.content.strip().toLowerCase();
+    return intent_response === "true";
+  } catch (error) {
+    console.error("QueryUnderstandingTool error:", error);
+    return true;
+  }
+}
+__name(QueryUnderstandingTool, "QueryUnderstandingTool");
+function PlotCodeGeneratorTool(cols, query) {
+  return `Given DataFrame \`df\` with columns: ${cols.join(", ")}
+Write Python code using pandas **and matplotlib** (as plt) to answer:
+"${query}"
 
-ROLE & CONTEXT:
-- You analyze user requests and dataset characteristics to recommend the best visualization approach
-- Your goal is to maximize data clarity, insight discovery, and visual impact
-- You consider both technical data properties and human perception principles
+Rules
+-----
+1. Use pandas for data manipulation and matplotlib.pyplot (as plt) for plotting.
+2. Assign the final result (DataFrame, Series, scalar *or* matplotlib Figure) to a variable named \`result\`.
+3. Create only ONE relevant plot. Set \`figsize=(6,4)\`, add title/labels.
+4. Return your answer inside a single markdown fence that starts with \`\`\`python and ends with \`\`\`.`;
+}
+__name(PlotCodeGeneratorTool, "PlotCodeGeneratorTool");
+function CodeWritingTool(cols, query) {
+  return `Given DataFrame \`df\` with columns: ${cols.join(", ")}
+Write Python code (pandas **only**, no plotting) to answer:
+"${query}"
 
-INPUT FORMAT:
-- User's natural language request for a visualization
-- Complete dataset schema with column types and statistics
-- Sample data showing actual values and patterns
-- Existing statistical insights and patterns from previous analysis
+Rules
+-----
+1. Use pandas operations on \`df\` only.
+2. Assign the final result to \`result\`.
+3. Wrap the snippet in a single \`\`\`python code fence (no extra prose).`;
+}
+__name(CodeWritingTool, "CodeWritingTool");
+async function CodeGenerationAgent(query, schema, client) {
+  try {
+    const shouldPlot = await QueryUnderstandingTool(query, client);
+    const cols = schema.map((col) => col.name);
+    const prompt = shouldPlot ? PlotCodeGeneratorTool(cols, query) : CodeWritingTool(cols, query);
+    const messages = [
+      {
+        role: "system",
+        content: "detailed thinking off. You are a Python data-analysis expert who writes clean, efficient code. Solve the given problem with optimal pandas operations. Be concise and focused. Your response must contain ONLY a properly-closed ```python code block with no explanations before or after. Ensure your solution is correct, handles edge cases, and follows best practices for data analysis."
+      },
+      {
+        role: "user",
+        content: prompt
+      }
+    ];
+    const response = await client.chat.completions.create({
+      model: NVIDIA_MODEL,
+      messages,
+      temperature: 0.2,
+      max_tokens: 1024
+    });
+    const fullResponse = response.choices[0].message.content;
+    const code = extractFirstCodeBlock(fullResponse);
+    return {
+      code,
+      shouldPlot,
+      error: code ? void 0 : "Failed to extract code from response"
+    };
+  } catch (error) {
+    console.error("CodeGenerationAgent error:", error);
+    return {
+      code: "",
+      shouldPlot: false,
+      error: error.message
+    };
+  }
+}
+__name(CodeGenerationAgent, "CodeGenerationAgent");
+function ExecutionAgent(code, data, shouldPlot) {
+  try {
+    console.log("Executing code:", code);
+    console.log("Data rows:", data.length);
+    console.log("Should plot:", shouldPlot);
+    if (shouldPlot && code.includes("plt.")) {
+      const plotlySpec = convertMatplotlibToPlotly(code, data);
+      if (plotlySpec) {
+        return {
+          result: {
+            type: "plot",
+            chartSpec: plotlySpec,
+            description: "Interactive visualization generated from Python code",
+            code,
+            dataPoints: data.length
+          }
+        };
+      } else {
+        const fallbackChart = generateIntelligentFallbackChart(code, data);
+        return {
+          result: {
+            type: "plot",
+            chartSpec: fallbackChart,
+            description: "Generated visualization based on code analysis",
+            code,
+            dataPoints: data.length
+          }
+        };
+      }
+    } else {
+      const dataResult = executeDataOperations(code, data);
+      return {
+        result: {
+          type: "data",
+          value: dataResult,
+          description: "Data analysis result",
+          code,
+          dataPoints: data.length
+        }
+      };
+    }
+  } catch (error) {
+    return {
+      result: null,
+      error: `Error executing code: ${error.message}`
+    };
+  }
+}
+__name(ExecutionAgent, "ExecutionAgent");
+function convertMatplotlibToPlotly(code, data) {
+  try {
+    const codeAnalysis = analyzePythonCode(code);
+    if (codeAnalysis.chartType === "bar") {
+      return generateBarChartFromCode(codeAnalysis, data);
+    } else if (codeAnalysis.chartType === "line" || codeAnalysis.chartType === "plot") {
+      return generateLineChartFromCode(codeAnalysis, data);
+    } else if (codeAnalysis.chartType === "scatter") {
+      return generateScatterChartFromCode(codeAnalysis, data);
+    } else if (codeAnalysis.chartType === "hist" || codeAnalysis.chartType === "histogram") {
+      return generateHistogramFromCode(codeAnalysis, data);
+    } else if (codeAnalysis.chartType === "pie") {
+      return generatePieChartFromCode(codeAnalysis, data);
+    } else if (codeAnalysis.chartType === "dual_axis") {
+      return generateDualAxisChartFromCode(codeAnalysis, data);
+    }
+    return null;
+  } catch (error) {
+    console.error("Error converting matplotlib to Plotly:", error);
+    return null;
+  }
+}
+__name(convertMatplotlibToPlotly, "convertMatplotlibToPlotly");
+function analyzePythonCode(code) {
+  const analysis = {
+    chartType: "unknown",
+    columns: [],
+    operations: [],
+    title: "",
+    xlabel: "",
+    ylabel: "",
+    groupBy: null,
+    aggregation: null
+  };
+  if (code.includes(".plot(kind='bar')") || code.includes(".plot.bar(") || code.includes("plt.bar(") || code.includes(".value_counts().plot(kind='bar')")) {
+    analysis.chartType = "bar";
+  } else if (code.includes(".plot(kind='line')") || code.includes(".plot(") || code.includes("plt.plot(") || code.includes("mode='lines")) {
+    analysis.chartType = "line";
+  } else if (code.includes("plt.scatter(") || code.includes("kind='scatter'") || code.includes("mode='markers'")) {
+    analysis.chartType = "scatter";
+  } else if (code.includes("plt.hist(") || code.includes("kind='hist'") || code.includes(".hist(")) {
+    analysis.chartType = "hist";
+  } else if (code.includes("plt.pie(") || code.includes("kind='pie'")) {
+    analysis.chartType = "pie";
+  } else if (code.includes("ax2") || code.includes("twinx()")) {
+    analysis.chartType = "dual_axis";
+  }
+  const titleMatches = [
+    code.match(/title=['"]([^'"]+)['"]/),
+    code.match(/plt\.title\(['"]([^'"]+)['"]\)/),
+    code.match(/\.set_title\(['"]([^'"]+)['"]\)/)
+  ];
+  const titleMatch = titleMatches.find((match) => match !== null);
+  if (titleMatch) analysis.title = titleMatch[1];
+  const xlabelMatches = [
+    code.match(/xlabel=['"]([^'"]+)['"]/),
+    code.match(/plt\.xlabel\(['"]([^'"]+)['"]\)/),
+    code.match(/\.set_xlabel\(['"]([^'"]+)['"]\)/)
+  ];
+  const xlabelMatch = xlabelMatches.find((match) => match !== null);
+  if (xlabelMatch) analysis.xlabel = xlabelMatch[1];
+  const ylabelMatches = [
+    code.match(/ylabel=['"]([^'"]+)['"]/),
+    code.match(/plt\.ylabel\(['"]([^'"]+)['"]\)/),
+    code.match(/\.set_ylabel\(['"]([^'"]+)['"]\)/)
+  ];
+  const ylabelMatch = ylabelMatches.find((match) => match !== null);
+  if (ylabelMatch) analysis.ylabel = ylabelMatch[1];
+  const columnMatches = code.match(/df\[['"]([^'"]+)['"]\]/g);
+  if (columnMatches) {
+    analysis.columns = [...new Set(columnMatches.map((match) => match.match(/['"]([^'"]+)['"]/)[1]))];
+  }
+  const functionColumnMatches = code.match(/(?:plt\.\w+|\.plot)\([^)]*df\[['"]([^'"]+)['"]\][^)]*(?:,\s*df\[['"]([^'"]+)['"]\])?/);
+  if (functionColumnMatches) {
+    if (functionColumnMatches[1]) analysis.columns.push(functionColumnMatches[1]);
+    if (functionColumnMatches[2]) analysis.columns.push(functionColumnMatches[2]);
+  }
+  analysis.columns = [...new Set(analysis.columns)];
+  const groupByMatch = code.match(/\.groupby\(['"]([^'"]+)['"]\)/);
+  if (groupByMatch) analysis.groupBy = groupByMatch[1];
+  if (code.includes(".mean()")) analysis.aggregation = "mean";
+  else if (code.includes(".sum()")) analysis.aggregation = "sum";
+  else if (code.includes(".count()")) analysis.aggregation = "count";
+  else if (code.includes(".value_counts()")) analysis.aggregation = "value_counts";
+  else if (code.includes(".median()")) analysis.aggregation = "median";
+  else if (code.includes(".std()")) analysis.aggregation = "std";
+  console.log("\u{1F4CA} Code analysis result:", analysis);
+  return analysis;
+}
+__name(analyzePythonCode, "analyzePythonCode");
+function generateBarChartFromCode(analysis, data) {
+  try {
+    let chartData;
+    if (analysis.groupBy && analysis.aggregation && analysis.columns.length >= 1) {
+      const groups = data.reduce((acc, row) => {
+        const key = row[analysis.groupBy];
+        if (!acc[key]) acc[key] = [];
+        acc[key].push(row);
+        return acc;
+      }, {});
+      const xValues = Object.keys(groups);
+      const yValues = xValues.map((key) => {
+        const groupData = groups[key];
+        const values = groupData.map((row) => Number(row[analysis.columns[0]])).filter((v) => !isNaN(v));
+        if (analysis.aggregation === "mean") return values.reduce((a, b) => a + b, 0) / values.length;
+        if (analysis.aggregation === "sum") return values.reduce((a, b) => a + b, 0);
+        return values.length;
+      });
+      chartData = [{
+        x: xValues,
+        y: yValues,
+        type: "bar",
+        marker: {
+          color: "#667eea",
+          line: { color: "#2d3748", width: 1 }
+        },
+        text: yValues.map((v) => v.toLocaleString()),
+        textposition: "outside"
+      }];
+    } else if (analysis.columns.length >= 2) {
+      chartData = [{
+        x: data.map((row) => row[analysis.columns[0]]),
+        y: data.map((row) => Number(row[analysis.columns[1]])),
+        type: "bar",
+        marker: {
+          color: "#667eea",
+          line: { color: "#2d3748", width: 1 }
+        }
+      }];
+    } else {
+      return null;
+    }
+    return {
+      data: chartData,
+      layout: {
+        title: { text: analysis.title || "Bar Chart", font: { size: 16, color: "#2d3748" } },
+        xaxis: { title: analysis.xlabel || analysis.groupBy || analysis.columns[0] },
+        yaxis: { title: analysis.ylabel || analysis.columns[1] || "Values" },
+        plot_bgcolor: "rgba(0,0,0,0)",
+        paper_bgcolor: "rgba(0,0,0,0)",
+        margin: { t: 60, b: 60, l: 60, r: 40 }
+      }
+    };
+  } catch (error) {
+    console.error("Error generating bar chart:", error);
+    return null;
+  }
+}
+__name(generateBarChartFromCode, "generateBarChartFromCode");
+function generateLineChartFromCode(analysis, data) {
+  try {
+    if (analysis.columns.length < 2) return null;
+    const chartData = [{
+      x: data.map((row) => row[analysis.columns[0]]),
+      y: data.map((row) => Number(row[analysis.columns[1]])),
+      type: "scatter",
+      mode: "lines+markers",
+      line: { color: "#667eea", width: 3 },
+      marker: { color: "#764ba2", size: 6 }
+    }];
+    return {
+      data: chartData,
+      layout: {
+        title: { text: analysis.title || "Line Chart", font: { size: 16, color: "#2d3748" } },
+        xaxis: { title: analysis.xlabel || analysis.columns[0] },
+        yaxis: { title: analysis.ylabel || analysis.columns[1] },
+        plot_bgcolor: "rgba(0,0,0,0)",
+        paper_bgcolor: "rgba(0,0,0,0)",
+        margin: { t: 60, b: 60, l: 60, r: 40 }
+      }
+    };
+  } catch (error) {
+    console.error("Error generating line chart:", error);
+    return null;
+  }
+}
+__name(generateLineChartFromCode, "generateLineChartFromCode");
+function generateScatterChartFromCode(analysis, data) {
+  try {
+    if (analysis.columns.length < 2) return null;
+    const chartData = [{
+      x: data.map((row) => Number(row[analysis.columns[0]])),
+      y: data.map((row) => Number(row[analysis.columns[1]])),
+      type: "scatter",
+      mode: "markers",
+      marker: {
+        color: "#667eea",
+        size: 8,
+        line: { color: "#2d3748", width: 1 }
+      }
+    }];
+    return {
+      data: chartData,
+      layout: {
+        title: { text: analysis.title || "Scatter Plot", font: { size: 16, color: "#2d3748" } },
+        xaxis: { title: analysis.xlabel || analysis.columns[0] },
+        yaxis: { title: analysis.ylabel || analysis.columns[1] },
+        plot_bgcolor: "rgba(0,0,0,0)",
+        paper_bgcolor: "rgba(0,0,0,0)",
+        margin: { t: 60, b: 60, l: 60, r: 40 }
+      }
+    };
+  } catch (error) {
+    console.error("Error generating scatter chart:", error);
+    return null;
+  }
+}
+__name(generateScatterChartFromCode, "generateScatterChartFromCode");
+function generateHistogramFromCode(analysis, data) {
+  try {
+    if (analysis.columns.length < 1) return null;
+    const values = data.map((row) => Number(row[analysis.columns[0]])).filter((v) => !isNaN(v));
+    const chartData = [{
+      x: values,
+      type: "histogram",
+      nbinsx: Math.min(30, Math.max(10, Math.floor(Math.sqrt(values.length)))),
+      marker: {
+        color: "#667eea",
+        opacity: 0.7,
+        line: { color: "#2d3748", width: 1 }
+      }
+    }];
+    return {
+      data: chartData,
+      layout: {
+        title: { text: analysis.title || "Distribution", font: { size: 16, color: "#2d3748" } },
+        xaxis: { title: analysis.xlabel || analysis.columns[0] },
+        yaxis: { title: "Frequency" },
+        plot_bgcolor: "rgba(0,0,0,0)",
+        paper_bgcolor: "rgba(0,0,0,0)",
+        margin: { t: 60, b: 60, l: 60, r: 40 }
+      }
+    };
+  } catch (error) {
+    console.error("Error generating histogram:", error);
+    return null;
+  }
+}
+__name(generateHistogramFromCode, "generateHistogramFromCode");
+function generatePieChartFromCode(analysis, data) {
+  try {
+    if (analysis.columns.length < 1) return null;
+    const counts = data.reduce((acc, row) => {
+      const value = row[analysis.columns[0]];
+      acc[value] = (acc[value] || 0) + 1;
+      return acc;
+    }, {});
+    const labels = Object.keys(counts);
+    const values = Object.values(counts);
+    const chartData = [{
+      labels,
+      values,
+      type: "pie",
+      marker: {
+        colors: ["#667eea", "#764ba2", "#f093fb", "#f5576c", "#4facfe", "#00f2fe"],
+        line: { color: "#ffffff", width: 2 }
+      },
+      textinfo: "label+percent",
+      textposition: "auto"
+    }];
+    return {
+      data: chartData,
+      layout: {
+        title: { text: analysis.title || "Distribution", font: { size: 16, color: "#2d3748" } },
+        plot_bgcolor: "rgba(0,0,0,0)",
+        paper_bgcolor: "rgba(0,0,0,0)",
+        margin: { t: 60, b: 60, l: 60, r: 60 }
+      }
+    };
+  } catch (error) {
+    console.error("Error generating pie chart:", error);
+    return null;
+  }
+}
+__name(generatePieChartFromCode, "generatePieChartFromCode");
+function generateDualAxisChartFromCode(analysis, data) {
+  try {
+    if (analysis.columns.length < 3) return null;
+    const chartData = [
+      {
+        x: data.map((row) => row[analysis.columns[0]]),
+        y: data.map((row) => Number(row[analysis.columns[1]])),
+        type: "scatter",
+        mode: "lines+markers",
+        name: analysis.columns[1],
+        line: { color: "#667eea", width: 3 },
+        yaxis: "y"
+      },
+      {
+        x: data.map((row) => row[analysis.columns[0]]),
+        y: data.map((row) => Number(row[analysis.columns[2]])),
+        type: "scatter",
+        mode: "lines+markers",
+        name: analysis.columns[2],
+        line: { color: "#f093fb", width: 3 },
+        yaxis: "y2"
+      }
+    ];
+    return {
+      data: chartData,
+      layout: {
+        title: { text: analysis.title || "Dual Axis Chart", font: { size: 16, color: "#2d3748" } },
+        xaxis: { title: analysis.xlabel || analysis.columns[0] },
+        yaxis: {
+          title: analysis.columns[1],
+          side: "left",
+          color: "#667eea"
+        },
+        yaxis2: {
+          title: analysis.columns[2],
+          side: "right",
+          overlaying: "y",
+          color: "#f093fb"
+        },
+        plot_bgcolor: "rgba(0,0,0,0)",
+        paper_bgcolor: "rgba(0,0,0,0)",
+        margin: { t: 60, b: 60, l: 60, r: 60 }
+      }
+    };
+  } catch (error) {
+    console.error("Error generating dual axis chart:", error);
+    return null;
+  }
+}
+__name(generateDualAxisChartFromCode, "generateDualAxisChartFromCode");
+function generateIntelligentFallbackChart(code, data) {
+  if (data.length === 0) {
+    return {
+      data: [{ x: ["No Data"], y: [0], type: "bar" }],
+      layout: { title: "No Data Available" }
+    };
+  }
+  const keys = Object.keys(data[0]);
+  const numericColumns = keys.filter(
+    (key) => !isNaN(Number(data[0][key])) && data[0][key] !== null && data[0][key] !== ""
+  );
+  const stringColumns = keys.filter(
+    (key) => isNaN(Number(data[0][key])) || data[0][key] === null || data[0][key] === ""
+  );
+  if (numericColumns.length >= 2) {
+    return {
+      data: [{
+        x: data.map((row) => Number(row[numericColumns[0]])),
+        y: data.map((row) => Number(row[numericColumns[1]])),
+        type: "scatter",
+        mode: "markers",
+        marker: { color: "#667eea", size: 8 }
+      }],
+      layout: {
+        title: `${numericColumns[1]} vs ${numericColumns[0]}`,
+        xaxis: { title: numericColumns[0] },
+        yaxis: { title: numericColumns[1] },
+        plot_bgcolor: "rgba(0,0,0,0)",
+        paper_bgcolor: "rgba(0,0,0,0)",
+        margin: { t: 60, b: 60, l: 60, r: 40 }
+      }
+    };
+  } else if (numericColumns.length >= 1 && stringColumns.length >= 1) {
+    return {
+      data: [{
+        x: data.map((row) => row[stringColumns[0]]),
+        y: data.map((row) => Number(row[numericColumns[0]])),
+        type: "bar",
+        marker: { color: "#667eea" }
+      }],
+      layout: {
+        title: `${numericColumns[0]} by ${stringColumns[0]}`,
+        xaxis: { title: stringColumns[0] },
+        yaxis: { title: numericColumns[0] },
+        plot_bgcolor: "rgba(0,0,0,0)",
+        paper_bgcolor: "rgba(0,0,0,0)",
+        margin: { t: 60, b: 60, l: 60, r: 40 }
+      }
+    };
+  }
+  return {
+    data: [{ x: keys, y: keys.map(() => 1), type: "bar" }],
+    layout: { title: "Data Overview" }
+  };
+}
+__name(generateIntelligentFallbackChart, "generateIntelligentFallbackChart");
+function executeDataOperations(code, data) {
+  if (code.includes(".describe()")) {
+    const numericColumns = Object.keys(data[0]).filter(
+      (key) => !isNaN(Number(data[0][key]))
+    );
+    const stats = {};
+    numericColumns.forEach((col) => {
+      const values = data.map((row) => Number(row[col])).filter((v) => !isNaN(v));
+      if (values.length > 0) {
+        stats[col] = {
+          count: values.length,
+          mean: values.reduce((a, b) => a + b, 0) / values.length,
+          min: Math.min(...values),
+          max: Math.max(...values)
+        };
+      }
+    });
+    return { type: "statistics", data: stats };
+  } else if (code.includes(".head()")) {
+    return { type: "preview", data: data.slice(0, 5) };
+  } else if (code.includes(".shape")) {
+    return { type: "shape", data: [data.length, Object.keys(data[0]).length] };
+  } else if (code.includes(".info()")) {
+    return {
+      type: "info",
+      data: {
+        rows: data.length,
+        columns: Object.keys(data[0]).length,
+        columns_list: Object.keys(data[0])
+      }
+    };
+  }
+  return { type: "result", data: "Analysis complete" };
+}
+__name(executeDataOperations, "executeDataOperations");
+function ReasoningCurator(query, result) {
+  const isError = result?.error;
+  const isPlot = result?.type === "plot";
+  if (isError) {
+    return `The user asked: "${query}".
+There was an error: ${result.error}
+Explain what went wrong and suggest alternatives.`;
+  } else if (isPlot) {
+    return `The user asked: "${query}".
+Below is a description of the plot result:
+${result.description || "Chart created"}
+Explain in 2\u20133 concise sentences what the chart shows (no code talk).`;
+  } else {
+    return `The user asked: "${query}".
+The result value is: ${result?.value || result?.description || "Analysis complete"}
+Explain in 2\u20133 concise sentences what this tells about the data (no mention of charts).`;
+  }
+}
+__name(ReasoningCurator, "ReasoningCurator");
+async function ReasoningAgent(query, result, client) {
+  try {
+    const prompt = ReasoningCurator(query, result);
+    const response = await client.chat.completions.create({
+      model: NVIDIA_MODEL,
+      messages: [
+        {
+          role: "system",
+          content: "detailed thinking on. You are an insightful data analyst."
+        },
+        {
+          role: "user",
+          content: prompt
+        }
+      ],
+      temperature: 0.2,
+      max_tokens: 1024
+    });
+    const fullResponse = response.choices[0].message.content;
+    const { thinking, explanation } = extractThinkingAndExplanation(fullResponse);
+    return {
+      thinking,
+      explanation
+    };
+  } catch (error) {
+    console.error("ReasoningAgent error:", error);
+    return {
+      thinking: "",
+      explanation: "Unable to generate reasoning due to an error.",
+      error: error.message
+    };
+  }
+}
+__name(ReasoningAgent, "ReasoningAgent");
+async function DataInsightAgent(schema, data, client) {
+  try {
+    const prompt = `Given a dataset with ${data.length} rows and ${schema.length} columns:
+Columns: ${schema.map((col) => col.name).join(", ")}
+Data types: ${schema.map((col) => `${col.name}: ${col.type}`).join(", ")}
 
-REASONING PROCESS:
-1. Parse user intent - what story are they trying to tell?
-2. Assess data suitability - which columns best answer their question?
-3. Consider visualization best practices - what chart type reveals patterns most clearly?
-4. Evaluate alternatives - what other approaches might work?
-5. Predict outcome - what insights will this visualization provide?
-
-OUTPUT REQUIREMENTS:
-- Return ONLY valid JSON with the exact structure specified
-- Provide detailed reasoning that shows your thought process
-- Recommend the single best chart type for the user's goal
-- Identify 2-3 primary variables that should be visualized
-- List key considerations that influenced your decision
-- Suggest 2+ alternative approaches for comparison
-- Explain what insights the user should expect to gain
-
-CHART TYPE SELECTION CRITERIA:
-- Bar charts: Comparing categories, rankings, discrete values
-- Line charts: Time series, trends, continuous progression
-- Scatter plots: Correlations, relationships between 2+ variables
-- Pie charts: Parts of a whole, percentage distributions (max 8 categories)
-- Histograms: Distribution analysis, frequency patterns
-- Heatmaps: Correlation matrices, intensity patterns
-- Box plots: Distribution comparison, outlier analysis
-
-CRITICAL: Always return valid JSON. Focus on the "why" behind your recommendations.`,
-  CHART_GENERATION: `You are a Senior Data Visualization Engineer specializing in Plotly.js chart specifications with expertise in creating professional, interactive visualizations.
-
-ROLE & CONTEXT:
-- You create production-ready Plotly.js chart specifications based on analysis and reasoning
-- Your charts must be visually appealing, technically accurate, and optimally configured
-- You follow modern visualization design principles and accessibility standards
-
-INPUT FORMAT:
-- Previous AI reasoning analysis with recommended chart type and variables
-- Complete dataset schema with statistical context
-- Sample data rows with actual values
-- User's original visualization request
-
-IMPLEMENTATION REQUIREMENTS:
-- Generate ONLY valid Plotly.js JSON specification
-- Use the exact chart type recommended in the reasoning analysis
-- Populate x/y arrays with actual data from the sample provided
-- Apply professional styling with appropriate colors and fonts
-- Include meaningful titles, axis labels, and formatting
-
-TECHNICAL SPECIFICATIONS:
-- Colors: Use professional palette starting with #667eea
-- Fonts: Size 16 for titles, 12-14 for labels, color #333
-- Margins: Standard t:60, b:60, l:60, r:40 unless chart needs more space
-- Responsiveness: Charts must work on mobile and desktop
-- Accessibility: Include proper titles and labels for screen readers
-
-CHART-SPECIFIC GUIDELINES:
-- Bar charts: Sort by value when logical, limit to top 10-15 categories
-- Line charts: Sort by x-axis chronologically, smooth lines for trends
-- Scatter plots: Include proper axis scaling, consider trend lines
-- Pie charts: Limit to 8 segments, combine small segments into "Others"
-- Heatmaps: Use diverging color scales, include color bar legends
-- Histograms: Choose appropriate bin sizes, show distribution shape clearly
-
-QUALITY STANDARDS:
-- Charts must accurately represent the data without distortion
-- Visual hierarchy should guide the viewer's attention appropriately
-- Interactive features should enhance, not overwhelm the experience
-- Performance: Charts should render quickly with sample data sizes
-
-CRITICAL: Return ONLY the Plotly.js JSON specification. No markdown, no explanations, no additional text.`
+Provide:
+1. A brief description of what this dataset contains
+2. 3-4 possible data analysis questions that could be explored
+Keep it concise and focused.`;
+    const response = await client.chat.completions.create({
+      model: NVIDIA_MODEL,
+      messages: [
+        {
+          role: "system",
+          content: "detailed thinking off. You are a data analyst providing brief, focused insights."
+        },
+        {
+          role: "user",
+          content: prompt
+        }
+      ],
+      temperature: 0.2,
+      max_tokens: 512
+    });
+    return response.choices[0].message.content;
+  } catch (error) {
+    console.error("DataInsightAgent error:", error);
+    return `Error generating dataset insights: ${error.message}`;
+  }
+}
+__name(DataInsightAgent, "DataInsightAgent");
+function extractFirstCodeBlock(text) {
+  const start = text.indexOf("```python");
+  if (start === -1) {
+    return "";
+  }
+  const codeStart = start + "```python".length;
+  const end = text.indexOf("```", codeStart);
+  if (end === -1) {
+    return "";
+  }
+  return text.substring(codeStart, end).trim();
+}
+__name(extractFirstCodeBlock, "extractFirstCodeBlock");
+function extractThinkingAndExplanation(text) {
+  const thinkStart = text.indexOf("<think>");
+  const thinkEnd = text.indexOf("</think>");
+  let thinking = "";
+  let explanation = text;
+  if (thinkStart !== -1 && thinkEnd !== -1) {
+    thinking = text.substring(thinkStart + 7, thinkEnd).trim();
+    explanation = text.replace(/<think>.*?<\/think>/s, "").trim();
+  }
+  return { thinking, explanation };
+}
+__name(extractThinkingAndExplanation, "extractThinkingAndExplanation");
+String.prototype.strip = function() {
+  return this.trim();
 };
+async function DashboardGenerationAgent(schema, data, analysis, client) {
+  try {
+    console.log("\u{1F3A8} DashboardGenerationAgent: Creating intelligent dashboard...");
+    const dashboardPrompt = createDashboardPrompt(schema, data, analysis);
+    const response = await client.chat.completions.create({
+      model: NVIDIA_MODEL,
+      messages: [
+        {
+          role: "system",
+          content: "detailed thinking off. You are a data visualization expert who creates optimal dashboard layouts. You MUST respond with ONLY valid JSON that starts with { and ends with }. No explanations, no additional text. Focus on the most valuable and insightful visualizations based on the data characteristics and business context."
+        },
+        {
+          role: "user",
+          content: dashboardPrompt
+        }
+      ],
+      temperature: 0.1,
+      max_tokens: 1024
+    });
+    let dashboardRecommendations;
+    try {
+      const responseText = response.choices[0].message.content;
+      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+      const jsonText = jsonMatch ? jsonMatch[0] : responseText;
+      dashboardRecommendations = JSON.parse(jsonText);
+    } catch (jsonError) {
+      console.error("Failed to parse NVIDIA response as JSON:", jsonError);
+      throw new Error("Invalid JSON response from NVIDIA API");
+    }
+    const charts = [];
+    if (dashboardRecommendations?.charts && Array.isArray(dashboardRecommendations.charts)) {
+      for (const recommendation of dashboardRecommendations.charts.slice(0, 5)) {
+        const chart = await generateDashboardChart(recommendation, schema, data, client);
+        if (chart) {
+          const formattedChart = {
+            title: chart.metadata?.title || recommendation.title,
+            description: chart.metadata?.businessInsight || recommendation.business_insight || "Data visualization",
+            chartSpec: {
+              data: chart.data,
+              layout: chart.layout
+            },
+            priority: chart.metadata?.priority || recommendation.priority || 1
+          };
+          charts.push(formattedChart);
+        }
+      }
+    }
+    console.log(`\u2705 Generated ${charts.length} intelligent dashboard charts`);
+    return charts.length > 0 ? charts : generateEnhancedAutoCharts(schema, data, analysis);
+  } catch (error) {
+    console.error("DashboardGenerationAgent error:", error);
+    return generateEnhancedAutoCharts(schema, data, analysis);
+  }
+}
+__name(DashboardGenerationAgent, "DashboardGenerationAgent");
+function createDashboardPrompt(schema, data, analysis) {
+  const numericCols = schema.filter((col) => col.type === "number").map((col) => col.name);
+  const categoricalCols = schema.filter((col) => col.type === "string").map((col) => col.name);
+  const dateCols = schema.filter((col) => col.type === "date").map((col) => col.name);
+  return `Based on this dataset analysis, recommend the 5 most valuable visualizations for a comprehensive dashboard:
+
+DATASET CHARACTERISTICS:
+- Rows: ${data.length}
+- Numeric columns: ${numericCols.join(", ")}
+- Categorical columns: ${categoricalCols.join(", ")}
+- Date columns: ${dateCols.join(", ")}
+
+BUSINESS INSIGHTS:
+${JSON.stringify(analysis?.businessInsights || analysis?.insights || [], null, 2)}
+
+CORRELATIONS FOUND:
+${JSON.stringify(analysis?.correlations || [], null, 2)}
+
+PATTERNS DETECTED:
+${JSON.stringify(analysis?.patterns || {}, null, 2)}
+
+Respond with exactly this JSON structure:
+{
+  "charts": [
+    {
+      "title": "Specific descriptive title",
+      "type": "bar|line|scatter|pie|histogram|dual_axis",
+      "primary_column": "column_name",
+      "secondary_column": "column_name_if_needed",
+      "groupby_column": "column_name_if_grouping",
+      "aggregation": "mean|sum|count|none",
+      "business_insight": "What business value this chart provides",
+      "priority": 1-5
+    }
+  ]
+}
+
+Focus on:
+1. Key performance indicators and metrics
+2. Trends and patterns over time (if date columns exist)
+3. Distributions and outliers
+4. Relationships and correlations
+5. Category performance comparisons
+
+Prioritize charts that provide actionable business insights.`;
+}
+__name(createDashboardPrompt, "createDashboardPrompt");
+async function generateDashboardChart(recommendation, schema, data, client) {
+  try {
+    const chartCode = generateChartCode(recommendation, schema);
+    const plotlySpec = convertMatplotlibToPlotly(chartCode, data);
+    if (plotlySpec) {
+      return {
+        ...plotlySpec,
+        metadata: {
+          title: recommendation.title,
+          type: recommendation.type,
+          businessInsight: recommendation.business_insight,
+          priority: recommendation.priority
+        }
+      };
+    }
+    return null;
+  } catch (error) {
+    console.error("Error generating dashboard chart:", error);
+    return null;
+  }
+}
+__name(generateDashboardChart, "generateDashboardChart");
+function generateChartCode(recommendation, schema) {
+  const { type, primary_column, secondary_column, groupby_column, aggregation } = recommendation;
+  let code = "import pandas as pd\nimport matplotlib.pyplot as plt\n\n";
+  switch (type) {
+    case "bar":
+      if (groupby_column && aggregation && aggregation !== "none") {
+        code += `result = df.groupby('${groupby_column}')['${primary_column}'].${aggregation}()
+`;
+        code += `plt.bar(result.index, result.values)
+`;
+        code += `plt.title('${recommendation.title}')
+`;
+        code += `plt.xlabel('${groupby_column}')
+`;
+        code += `plt.ylabel('${primary_column} (${aggregation})')
+`;
+      } else if (primary_column && secondary_column) {
+        code += `plt.bar(df['${primary_column}'], df['${secondary_column}'])
+`;
+        code += `plt.title('${recommendation.title}')
+`;
+        code += `plt.xlabel('${primary_column}')
+`;
+        code += `plt.ylabel('${secondary_column}')
+`;
+      }
+      break;
+    case "line":
+      if (primary_column && secondary_column) {
+        code += `plt.plot(df['${primary_column}'], df['${secondary_column}'])
+`;
+        code += `plt.title('${recommendation.title}')
+`;
+        code += `plt.xlabel('${primary_column}')
+`;
+        code += `plt.ylabel('${secondary_column}')
+`;
+      }
+      break;
+    case "scatter":
+      if (primary_column && secondary_column) {
+        code += `plt.scatter(df['${primary_column}'], df['${secondary_column}'])
+`;
+        code += `plt.title('${recommendation.title}')
+`;
+        code += `plt.xlabel('${primary_column}')
+`;
+        code += `plt.ylabel('${secondary_column}')
+`;
+      }
+      break;
+    case "histogram":
+      code += `plt.hist(df['${primary_column}'])
+`;
+      code += `plt.title('${recommendation.title}')
+`;
+      code += `plt.xlabel('${primary_column}')
+`;
+      code += `plt.ylabel('Frequency')
+`;
+      break;
+    case "pie":
+      code += `counts = df['${primary_column}'].value_counts()
+`;
+      code += `plt.pie(counts.values, labels=counts.index)
+`;
+      code += `plt.title('${recommendation.title}')
+`;
+      break;
+    case "dual_axis":
+      if (primary_column && secondary_column) {
+        code += `fig, ax1 = plt.subplots()
+`;
+        code += `ax1.plot(df.index, df['${primary_column}'], 'b-')
+`;
+        code += `ax1.set_ylabel('${primary_column}', color='b')
+`;
+        code += `ax2 = ax1.twinx()
+`;
+        code += `ax2.plot(df.index, df['${secondary_column}'], 'r-')
+`;
+        code += `ax2.set_ylabel('${secondary_column}', color='r')
+`;
+        code += `plt.title('${recommendation.title}')
+`;
+      }
+      break;
+  }
+  code += "result = plt.gcf()";
+  return code;
+}
+__name(generateChartCode, "generateChartCode");
+function generateEnhancedAutoCharts(schema, data, analysis) {
+  const charts = [];
+  const numericCols = schema.filter((col) => col.type === "number");
+  const categoricalCols = schema.filter((col) => col.type === "string");
+  const dateCols = schema.filter((col) => col.type === "date");
+  console.log("\u{1F3A8} Generating intelligent automatic charts...", {
+    numericCols: numericCols.length,
+    categoricalCols: categoricalCols.length,
+    dateCols: dateCols.length
+  });
+  if (dateCols.length > 0 && numericCols.length > 0 && data.length > 1) {
+    try {
+      const keyNumericCol = findKeyMetric(numericCols, data) || numericCols[0];
+      const chart = generateTimeSeriesChart(dateCols[0], keyNumericCol, data);
+      if (chart) charts.push(chart);
+    } catch (error) {
+      console.warn("Failed to generate time series chart:", error);
+    }
+  }
+  if (categoricalCols.length > 0 && numericCols.length > 0 && data.length > 1) {
+    try {
+      const balancedCategory = findBalancedCategory(categoricalCols, data);
+      const keyMetric = findKeyMetric(numericCols, data);
+      if (balancedCategory && keyMetric) {
+        const chart = generateKPIChart(keyMetric, balancedCategory, data);
+        if (chart) charts.push(chart);
+      } else if (categoricalCols.length > 0 && numericCols.length > 0) {
+        const chart = generateKPIChart(numericCols[0], categoricalCols[0], data);
+        if (chart) charts.push(chart);
+      }
+    } catch (error) {
+      console.warn("Failed to generate KPI chart:", error);
+    }
+  }
+  if (numericCols.length > 0 && data.length > 5) {
+    try {
+      const variableCol = findMostVariableColumn(numericCols, data);
+      if (variableCol) {
+        const chart = generateDistributionChart(variableCol, data);
+        if (chart) charts.push(chart);
+      }
+    } catch (error) {
+      console.warn("Failed to generate distribution chart:", error);
+    }
+  }
+  if (numericCols.length >= 2 && data.length > 5) {
+    try {
+      const strongCorrelation = findStrongestCorrelation(numericCols, data);
+      if (strongCorrelation) {
+        const chart = generateCorrelationChart(strongCorrelation.col1, strongCorrelation.col2, data);
+        if (chart) charts.push(chart);
+      } else {
+        const chart = generateCorrelationChart(numericCols[0], numericCols[1], data);
+        if (chart) charts.push(chart);
+      }
+    } catch (error) {
+      console.warn("Failed to generate correlation chart:", error);
+    }
+  }
+  if (categoricalCols.length > 0 && data.length > 2) {
+    try {
+      const categoryCol = findBalancedCategory(categoricalCols, data);
+      if (categoryCol) {
+        const chart = generateCategoryChart(categoryCol, data);
+        if (chart) charts.push(chart);
+      }
+    } catch (error) {
+      console.warn("Failed to generate category chart:", error);
+    }
+  }
+  if (numericCols.length >= 3 && categoricalCols.length >= 1 && data.length > 5) {
+    try {
+      const topMetrics = numericCols.slice(0, 2);
+      const categoryCol = categoricalCols[0];
+      const chart = generateMultiMetricChart(topMetrics, categoryCol, data);
+      if (chart) charts.push(chart);
+    } catch (error) {
+      console.warn("Failed to generate multi-metric chart:", error);
+    }
+  }
+  const validCharts = charts.filter((chart) => chart !== null);
+  console.log(`\u2705 Generated ${validCharts.length} intelligent automatic charts`);
+  return validCharts;
+}
+__name(generateEnhancedAutoCharts, "generateEnhancedAutoCharts");
+function findKeyMetric(numericCols, data) {
+  const businessKeywords = ["revenue", "profit", "sales", "income", "amount", "value", "price"];
+  for (const keyword of businessKeywords) {
+    const match = numericCols.find(
+      (col) => col.name.toLowerCase().includes(keyword)
+    );
+    if (match) return match;
+  }
+  return findMostVariableColumn(numericCols, data);
+}
+__name(findKeyMetric, "findKeyMetric");
+function findMostVariableColumn(numericCols, data) {
+  let maxVariation = 0;
+  let mostVariable = null;
+  numericCols.forEach((col) => {
+    const values = data.map((row) => Number(row[col.name])).filter((v) => !isNaN(v));
+    if (values.length > 0) {
+      const mean = values.reduce((a, b) => a + b, 0) / values.length;
+      const variance = values.reduce((acc, val) => acc + Math.pow(val - mean, 2), 0) / values.length;
+      const cv = Math.sqrt(variance) / mean;
+      if (cv > maxVariation) {
+        maxVariation = cv;
+        mostVariable = col;
+      }
+    }
+  });
+  return mostVariable;
+}
+__name(findMostVariableColumn, "findMostVariableColumn");
+function findStrongestCorrelation(numericCols, data) {
+  let strongest = null;
+  let maxCorrelation = 0;
+  for (let i = 0; i < numericCols.length; i++) {
+    for (let j = i + 1; j < numericCols.length; j++) {
+      const col1 = numericCols[i];
+      const col2 = numericCols[j];
+      const values1 = data.map((row) => Number(row[col1.name])).filter((v) => !isNaN(v));
+      const values2 = data.map((row) => Number(row[col2.name])).filter((v) => !isNaN(v));
+      if (values1.length === values2.length && values1.length > 5) {
+        const correlation = Math.abs(calculateCorrelation(values1, values2));
+        if (correlation > maxCorrelation && correlation > 0.5) {
+          maxCorrelation = correlation;
+          strongest = { col1, col2, correlation };
+        }
+      }
+    }
+  }
+  return strongest;
+}
+__name(findStrongestCorrelation, "findStrongestCorrelation");
+function findBalancedCategory(categoricalCols, data) {
+  for (const col of categoricalCols) {
+    const counts = data.reduce((acc, row) => {
+      const value = row[col.name];
+      acc[value] = (acc[value] || 0) + 1;
+      return acc;
+    }, {});
+    const uniqueCount = Object.keys(counts).length;
+    if (uniqueCount >= 3 && uniqueCount <= 10) {
+      return col;
+    }
+  }
+  return categoricalCols[0] || null;
+}
+__name(findBalancedCategory, "findBalancedCategory");
+function generateKPIChart(numericCol, categoryCol, data) {
+  if (!data || data.length === 0 || !numericCol || !categoryCol) {
+    return null;
+  }
+  const groups = data.reduce((acc, row) => {
+    const key = row[categoryCol.name];
+    const value = Number(row[numericCol.name]);
+    if (key && !isNaN(value)) {
+      if (!acc[key]) acc[key] = [];
+      acc[key].push(value);
+    }
+    return acc;
+  }, {});
+  if (Object.keys(groups).length === 0) {
+    return null;
+  }
+  const chartData = Object.entries(groups).map(([key, values]) => ({
+    category: key,
+    value: values.reduce((a, b) => a + b, 0) / values.length
+  })).sort((a, b) => b.value - a.value).slice(0, 10);
+  return {
+    title: `${numericCol.name} Performance by ${categoryCol.name}`,
+    description: `Shows performance distribution across different ${categoryCol.name} categories`,
+    chartSpec: {
+      data: [{
+        x: chartData.map((d) => d.category),
+        y: chartData.map((d) => d.value),
+        type: "bar",
+        marker: {
+          color: "#667eea",
+          line: { color: "#2d3748", width: 1 }
+        }
+      }],
+      layout: {
+        title: `${numericCol.name} Performance by ${categoryCol.name}`,
+        xaxis: { title: categoryCol.name },
+        yaxis: { title: `Average ${numericCol.name}` },
+        plot_bgcolor: "rgba(0,0,0,0)",
+        paper_bgcolor: "rgba(0,0,0,0)",
+        margin: { t: 60, b: 60, l: 60, r: 40 }
+      }
+    },
+    priority: 1
+  };
+}
+__name(generateKPIChart, "generateKPIChart");
+function generateDistributionChart(numericCol, data) {
+  if (!data || data.length === 0 || !numericCol) {
+    return null;
+  }
+  const values = data.map((row) => Number(row[numericCol.name])).filter((v) => !isNaN(v));
+  return {
+    title: `${numericCol.name} Distribution Analysis`,
+    description: `Reveals the distribution pattern and potential outliers in ${numericCol.name}`,
+    chartSpec: {
+      data: [{
+        x: values,
+        type: "histogram",
+        nbinsx: Math.min(20, Math.max(8, Math.floor(Math.sqrt(values.length)))),
+        marker: {
+          color: "#764ba2",
+          opacity: 0.7,
+          line: { color: "#2d3748", width: 1 }
+        }
+      }],
+      layout: {
+        title: `${numericCol.name} Distribution Analysis`,
+        xaxis: { title: numericCol.name },
+        yaxis: { title: "Frequency" },
+        plot_bgcolor: "rgba(0,0,0,0)",
+        paper_bgcolor: "rgba(0,0,0,0)",
+        margin: { t: 60, b: 60, l: 60, r: 40 }
+      }
+    },
+    priority: 2
+  };
+}
+__name(generateDistributionChart, "generateDistributionChart");
+function generateCorrelationChart(col1, col2, data) {
+  if (!data || data.length === 0 || !col1 || !col2) {
+    return null;
+  }
+  const points = data.map((row) => ({
+    x: Number(row[col1.name]),
+    y: Number(row[col2.name])
+  })).filter((point) => !isNaN(point.x) && !isNaN(point.y));
+  return {
+    title: `${col1.name} vs ${col2.name} Relationship`,
+    description: `Shows the relationship strength between ${col1.name} and ${col2.name}`,
+    chartSpec: {
+      data: [{
+        x: points.map((p) => p.x),
+        y: points.map((p) => p.y),
+        type: "scatter",
+        mode: "markers",
+        marker: {
+          color: "#f093fb",
+          size: 8,
+          opacity: 0.7,
+          line: { color: "#2d3748", width: 1 }
+        }
+      }],
+      layout: {
+        title: `${col1.name} vs ${col2.name} Relationship`,
+        xaxis: { title: col1.name },
+        yaxis: { title: col2.name },
+        plot_bgcolor: "rgba(0,0,0,0)",
+        paper_bgcolor: "rgba(0,0,0,0)",
+        margin: { t: 60, b: 60, l: 60, r: 40 }
+      }
+    },
+    priority: 3
+  };
+}
+__name(generateCorrelationChart, "generateCorrelationChart");
+function generateTimeSeriesChart(dateCol, numericCol, data) {
+  if (!data || data.length === 0 || !dateCol || !numericCol) {
+    return null;
+  }
+  const timeData = data.filter((row) => row[dateCol.name] && !isNaN(Number(row[numericCol.name]))).sort((a, b) => new Date(a[dateCol.name]).getTime() - new Date(b[dateCol.name]).getTime());
+  return {
+    title: `${numericCol.name} Trends Over Time`,
+    description: `Reveals temporal patterns and trends in ${numericCol.name}`,
+    chartSpec: {
+      data: [{
+        x: timeData.map((row) => row[dateCol.name]),
+        y: timeData.map((row) => Number(row[numericCol.name])),
+        type: "scatter",
+        mode: "lines+markers",
+        line: { color: "#4facfe", width: 3 },
+        marker: { color: "#00f2fe", size: 6 }
+      }],
+      layout: {
+        title: `${numericCol.name} Trends Over Time`,
+        xaxis: { title: dateCol.name },
+        yaxis: { title: numericCol.name },
+        plot_bgcolor: "rgba(0,0,0,0)",
+        paper_bgcolor: "rgba(0,0,0,0)",
+        margin: { t: 60, b: 60, l: 60, r: 40 }
+      }
+    },
+    priority: 1
+  };
+}
+__name(generateTimeSeriesChart, "generateTimeSeriesChart");
+function generateCategoryChart(categoryCol, data) {
+  if (!data || data.length === 0 || !categoryCol) {
+    return null;
+  }
+  const counts = data.reduce((acc, row) => {
+    const value = row[categoryCol.name];
+    acc[value] = (acc[value] || 0) + 1;
+    return acc;
+  }, {});
+  const sortedCounts = Object.entries(counts).sort(([, a], [, b]) => b - a).slice(0, 8);
+  return {
+    title: `${categoryCol.name} Distribution`,
+    description: `Shows the composition and distribution of ${categoryCol.name} categories`,
+    chartSpec: {
+      data: [{
+        labels: sortedCounts.map(([label]) => label),
+        values: sortedCounts.map(([, value]) => value),
+        type: "pie",
+        marker: {
+          colors: ["#667eea", "#764ba2", "#f093fb", "#f5576c", "#4facfe", "#00f2fe", "#43e97b", "#38f9d7"],
+          line: { color: "#ffffff", width: 2 }
+        },
+        textinfo: "label+percent",
+        textposition: "auto"
+      }],
+      layout: {
+        title: `${categoryCol.name} Distribution`,
+        plot_bgcolor: "rgba(0,0,0,0)",
+        paper_bgcolor: "rgba(0,0,0,0)",
+        margin: { t: 60, b: 60, l: 60, r: 60 }
+      }
+    },
+    priority: 4
+  };
+}
+__name(generateCategoryChart, "generateCategoryChart");
+function generateMultiMetricChart(topMetrics, categoryCol, data) {
+  if (!data || data.length === 0 || !topMetrics || topMetrics.length < 2 || !categoryCol) {
+    return null;
+  }
+  const groups = data.reduce((acc, row) => {
+    const key = row[categoryCol.name];
+    if (!acc[key]) acc[key] = [];
+    acc[key].push(Number(row[topMetrics[0].name]));
+    acc[key].push(Number(row[topMetrics[1].name]));
+    return acc;
+  }, {});
+  const chartData = Object.entries(groups).map(([key, values]) => ({
+    category: key,
+    value: values.reduce((a, b) => a + b, 0) / values.length
+  })).sort((a, b) => b.value - a.value).slice(0, 10);
+  return {
+    title: `${topMetrics.map((col) => col.name).join(" & ")} Performance by ${categoryCol.name}`,
+    description: `Multi-metric performance analysis across different ${categoryCol.name} categories`,
+    chartSpec: {
+      data: [{
+        x: chartData.map((d) => d.category),
+        y: chartData.map((d) => d.value),
+        type: "bar",
+        marker: {
+          color: "#667eea",
+          line: { color: "#2d3748", width: 1 }
+        }
+      }],
+      layout: {
+        title: `${topMetrics.map((col) => col.name).join(" & ")} Performance by ${categoryCol.name}`,
+        xaxis: { title: categoryCol.name },
+        yaxis: { title: "Average Performance" },
+        plot_bgcolor: "rgba(0,0,0,0)",
+        paper_bgcolor: "rgba(0,0,0,0)",
+        margin: { t: 60, b: 60, l: 60, r: 40 }
+      }
+    },
+    priority: 5
+  };
+}
+__name(generateMultiMetricChart, "generateMultiMetricChart");
+
+// src/handlers.ts
 async function uploadCsvHandler(request, env) {
   console.log("\u{1F4E5} uploadCsvHandler v2: Phase 1 upgrade with DuckDB and R2 storage");
   try {
@@ -1929,10 +3135,56 @@ async function uploadCsvHandler(request, env) {
     console.log("\u{1F4CA} Starting enhanced statistical analysis on full dataset...");
     const duckDbAnalysis = await analyzeWithDuckDB(data, env);
     console.log("\u2705 Enhanced statistical analysis completed");
-    console.log("\u{1F50D} Starting AI analysis with enhanced statistical context...");
-    const analysis = await analyzeDataWithAI(schema, sampleRows, env);
-    analysis.duckDbAnalysis = duckDbAnalysis;
-    console.log("\u2705 AI analysis completed with enhanced context");
+    console.log("\u{1F50D} Starting NVIDIA AI analysis with enhanced statistical context...");
+    let analysis;
+    if (env.NVIDIA_API_KEY) {
+      try {
+        console.log(`\u{1F511} Using NVIDIA API for enhanced dataset analysis`);
+        const nvidiaClient = createNvidiaClient(env.NVIDIA_API_KEY);
+        const insights = await DataInsightAgent(schema, sampleRows, nvidiaClient);
+        analysis = await analyzeDataWithAI(schema, sampleRows, env);
+        analysis.summary = insights;
+        analysis.duckDbAnalysis = duckDbAnalysis;
+        console.log("\u{1F3A8} Generating NVIDIA-powered intelligent dashboard...");
+        const intelligentCharts = await DashboardGenerationAgent(schema, data, analysis, nvidiaClient);
+        analysis.autoCharts = intelligentCharts;
+        console.log("\u2705 NVIDIA-enhanced AI analysis completed");
+      } catch (error) {
+        console.error("\u26A0\uFE0F NVIDIA API failed, falling back to Cloudflare AI:", error);
+        analysis = await analyzeDataWithAI(schema, sampleRows, env);
+        analysis.duckDbAnalysis = duckDbAnalysis;
+        if (analysis.autoCharts && analysis.autoCharts.length > 0) {
+          analysis.autoCharts = analysis.autoCharts.map((chart) => {
+            if (!chart.title && chart.chartSpec) {
+              return {
+                title: "Data Visualization",
+                description: "Chart generated from your data",
+                chartSpec: chart.chartSpec,
+                priority: chart.priority || 1
+              };
+            }
+            return chart;
+          });
+        }
+      }
+    } else {
+      console.log("\u26A0\uFE0F No NVIDIA API key found, using Cloudflare AI");
+      analysis = await analyzeDataWithAI(schema, sampleRows, env);
+      analysis.duckDbAnalysis = duckDbAnalysis;
+      if (analysis.autoCharts && analysis.autoCharts.length > 0) {
+        analysis.autoCharts = analysis.autoCharts.map((chart) => {
+          if (!chart.title && chart.chartSpec) {
+            return {
+              title: "Data Visualization",
+              description: "Chart generated from your data",
+              chartSpec: chart.chartSpec,
+              priority: chart.priority || 1
+            };
+          }
+          return chart;
+        });
+      }
+    }
     console.log("\u{1F4BE} Storing metadata in KV...");
     await Promise.all([
       env.KV.put(`${datasetId}:schema`, JSON.stringify(schema)),
@@ -1958,10 +3210,10 @@ async function uploadCsvHandler(request, env) {
     });
   } catch (error) {
     console.error("\u274C Upload error:", error);
-    console.error("\u274C Error stack:", error.stack);
+    console.error("\u274C Error stack:", error instanceof Error ? error.stack : "No stack trace available");
     return new Response(JSON.stringify({
       error: "Internal server error",
-      details: error.message,
+      details: error instanceof Error ? error.message : "Unknown error occurred",
       timestamp: (/* @__PURE__ */ new Date()).toISOString()
     }), {
       status: 500,
@@ -1970,88 +3222,16 @@ async function uploadCsvHandler(request, env) {
   }
 }
 __name(uploadCsvHandler, "uploadCsvHandler");
-async function performAIReasoning(prompt, schema, sampleRows, analysis, env) {
-  const reasoningPrompt = `${SYSTEM_PROMPTS2.REASONING_ANALYSIS}
-
-VISUALIZATION REASONING REQUEST:
-
-USER'S REQUEST: "${prompt}"
-
-DATASET SCHEMA & CONTEXT:
-${JSON.stringify(schema.map((col) => ({ name: col.name, type: col.type, stats: col.stats })), null, 2)}
-
-SAMPLE DATA FOR REFERENCE:
-${JSON.stringify(sampleRows.slice(0, 8), null, 2)}
-
-${analysis ? `EXISTING ANALYSIS INSIGHTS:
-Summary: ${analysis.summary}
-Key Patterns: ${analysis.insights.slice(0, 3).join(" | ")}
-Data Quality: ${analysis.dataQuality.completeness}% complete
-${analysis.patterns ? `Detected Patterns: ${analysis.patterns.trends.concat(analysis.patterns.distributions.map((d) => `${d.column} distribution`)).join(", ")}` : ""}
-${analysis.businessInsights ? `Business Context: ${analysis.businessInsights.slice(0, 2).join(" | ")}` : ""}
-` : ""}
-
-REQUIRED JSON OUTPUT FORMAT:
-{
-  "reasoning": "Step-by-step analysis of user intent, data characteristics, and optimal visualization strategy",
-  "recommendedChartType": "single_best_chart_type",
-  "primaryVariables": ["most_relevant_column1", "most_relevant_column2"],
-  "considerations": ["data_suitability_factor", "visualization_best_practice", "user_intent_factor"],
-  "dataInsights": "how the data characteristics inform this visualization choice",
-  "alternativeApproaches": ["alternative_chart_type_1", "alternative_chart_type_2"],
-  "expectedOutcome": "specific insights the user will gain from this visualization"
-}
-
-ANALYSIS FRAMEWORK:
-1. Parse user intent - what specific question are they trying to answer?
-2. Evaluate data fitness - which columns best support this analysis?
-3. Apply visualization principles - what chart type maximizes clarity and insight?
-4. Consider data limitations - any quality issues or constraints?
-5. Predict value - what actionable insights will this reveal?`;
-  try {
-    const response = await env.AI.run("@cf/qwen/qwq-32b", {
-      prompt: reasoningPrompt,
-      max_tokens: 800
-    });
-    let responseText = response.response || response.choices?.[0]?.text || response;
-    if (typeof responseText === "string") {
-      responseText = responseText.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
-      const thinkEndIndex = responseText.lastIndexOf("</think>");
-      if (thinkEndIndex !== -1) {
-        responseText = responseText.substring(thinkEndIndex + 8).trim();
-      }
-      const jsonStart = responseText.indexOf("{");
-      const jsonEnd = responseText.lastIndexOf("}");
-      if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
-        responseText = responseText.substring(jsonStart, jsonEnd + 1);
-      }
-    }
-    const reasoning = JSON.parse(responseText);
-    console.log("\u{1F9E0} AI Reasoning:", reasoning.reasoning);
-    return reasoning;
-  } catch (error) {
-    console.error("AI reasoning failed:", error);
-    return {
-      reasoning: "Analyzing user request for appropriate visualization approach",
-      recommendedChartType: "bar",
-      primaryVariables: schema.filter((col) => col.type === "number").slice(0, 2).map((col) => col.name),
-      considerations: ["Data availability", "Chart readability", "User intent"],
-      dataInsights: "Basic data overview needed",
-      alternativeApproaches: ["histogram", "scatter"],
-      expectedOutcome: "Visual representation of the requested data pattern"
-    };
-  }
-}
-__name(performAIReasoning, "performAIReasoning");
 async function queryHandler(request, env) {
-  console.log("\u{1F50D} queryHandler: request:", request.url);
+  console.log("\u{1F50D} queryHandler: NVIDIA Agent-based processing");
   try {
-    const { datasetId, prompt } = await request.json();
+    const requestData = await request.json();
+    const { datasetId, prompt } = requestData;
     console.log("Using dataset:", datasetId, "prompt:", prompt);
-    const [schemaStr, sampleRowsStr, analysisStr] = await Promise.all([
+    const [schemaStr, sampleRowsStr, dataStr] = await Promise.all([
       env.KV.get(`${datasetId}:schema`),
       env.KV.get(`${datasetId}:sample`),
-      env.KV.get(`${datasetId}:analysis`)
+      env.R2_BUCKET.get(datasetId)
     ]);
     if (!schemaStr || !sampleRowsStr) {
       return new Response(JSON.stringify({ error: "Dataset not found" }), {
@@ -2061,80 +3241,62 @@ async function queryHandler(request, env) {
     }
     const schema = JSON.parse(schemaStr);
     const sampleRows = JSON.parse(sampleRowsStr);
-    const analysis = analysisStr ? JSON.parse(analysisStr) : null;
-    console.log("\u{1F914} AI is analyzing the request and data context...");
-    const reasoningResponse = await performAIReasoning(prompt, schema, sampleRows, analysis, env);
-    console.log("\u2705 AI reasoning completed:", reasoningResponse.reasoning);
-    console.log("\u{1F3A8} Generating chart based on AI reasoning...");
-    const structuredPrompt = `${SYSTEM_PROMPTS2.CHART_GENERATION}
-
-CHART IMPLEMENTATION REQUEST:
-
-USER'S ORIGINAL REQUEST: "${prompt}"
-
-PREVIOUS AI REASONING ANALYSIS:
-Reasoning: ${reasoningResponse.reasoning}
-Recommended Chart Type: ${reasoningResponse.recommendedChartType}
-Primary Variables: ${reasoningResponse.primaryVariables.join(", ")}
-Key Considerations: ${reasoningResponse.considerations.join(", ")}
-Expected Outcome: ${reasoningResponse.expectedOutcome}
-
-DATASET SCHEMA WITH STATISTICS:
-${JSON.stringify(schema.map((col) => ({ name: col.name, type: col.type, stats: col.stats })), null, 2)}
-
-SAMPLE DATA FOR IMPLEMENTATION:
-${JSON.stringify(sampleRows.slice(0, 10), null, 2)}
-
-${analysis ? `STATISTICAL CONTEXT TO INCORPORATE:
-Business Insights: ${analysis.insights.slice(0, 3).join(" | ")}
-${analysis.patterns ? `
-Key Patterns:
-- Trends: ${analysis.patterns.trends.join(", ")}
-- Distributions: ${analysis.patterns.distributions.map((d) => `${d.column} (${d.type})`).join(", ")}
-` : ""}` : ""}
-
-IMPLEMENTATION REQUIREMENTS:
-- Chart Type: ${reasoningResponse.recommendedChartType}
-- Primary Variables: ${reasoningResponse.primaryVariables.join(" and ")}
-- Use actual sample data values to populate x/y arrays
-- Apply professional styling with gradient colors starting with #667eea
-- Include meaningful titles and axis labels based on the analysis context
-- Ensure chart tells the story identified in the reasoning phase
-
-RETURN ONLY PLOTLY.JS JSON SPECIFICATION - NO MARKDOWN, NO EXPLANATIONS:`;
-    const aiResponse = await env.AI.run("@cf/qwen/qwq-32b", {
-      prompt: structuredPrompt,
-      max_tokens: 1024
-    });
-    console.log("LLM response received");
-    let chartSpec;
-    try {
-      let responseText = aiResponse.response || aiResponse.choices?.[0]?.text || aiResponse;
-      if (typeof responseText === "string") {
-        responseText = responseText.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
-        const thinkEndIndex = responseText.lastIndexOf("</think>");
-        if (thinkEndIndex !== -1) {
-          responseText = responseText.substring(thinkEndIndex + 8).trim();
-        }
-        const jsonStart = responseText.indexOf("{");
-        const jsonEnd = responseText.lastIndexOf("}");
-        if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
-          responseText = responseText.substring(jsonStart, jsonEnd + 1);
-        }
+    let fullData = sampleRows;
+    if (dataStr) {
+      try {
+        const dataText = await dataStr.text();
+        fullData = JSON.parse(dataText);
+        console.log(`\u{1F4CA} Loaded full dataset: ${fullData.length} rows`);
+      } catch (error) {
+        console.warn("\u26A0\uFE0F Could not load full dataset, using sample data");
       }
-      console.debug("Cleaned AI response:", responseText);
-      chartSpec = JSON.parse(responseText);
-    } catch (parseError) {
-      console.error("Failed to parse AI response:", parseError);
-      console.error("Raw AI response:", aiResponse);
-      console.log("Using fallback chart generation");
-      chartSpec = createFallbackChart(schema, sampleRows);
     }
-    console.debug("Parsed chart spec:", chartSpec);
+    if (env.NVIDIA_API_KEY) {
+      try {
+        console.log("\u{1F916} Starting NVIDIA agent workflow...");
+        console.log(`\u{1F511} Using NVIDIA API for enhanced analysis`);
+        const nvidiaClient = createNvidiaClient(env.NVIDIA_API_KEY);
+        console.log("\u{1F527} CodeGenerationAgent: Generating code...");
+        const codeResult = await CodeGenerationAgent(prompt, schema, nvidiaClient);
+        if (codeResult.error) {
+          throw new Error(`Code generation failed: ${codeResult.error}`);
+        }
+        console.log("\u26A1 ExecutionAgent: Executing code...");
+        const executionResult = ExecutionAgent(codeResult.code, fullData, codeResult.shouldPlot);
+        if (executionResult.error) {
+          throw new Error(`Code execution failed: ${executionResult.error}`);
+        }
+        console.log("\u{1F9E0} ReasoningAgent: Generating insights...");
+        const reasoningResult = await ReasoningAgent(prompt, executionResult.result, nvidiaClient);
+        const response2 = {
+          code: codeResult.code,
+          result: executionResult.result,
+          shouldPlot: codeResult.shouldPlot,
+          thinking: reasoningResult.thinking,
+          explanation: reasoningResult.explanation,
+          logs: [
+            "NVIDIA agents workflow completed successfully",
+            "Code generated and executed",
+            "Reasoning and insights generated"
+          ]
+        };
+        console.log("\u2705 NVIDIA agent workflow completed successfully");
+        return new Response(JSON.stringify(response2), {
+          headers: {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*"
+          }
+        });
+      } catch (nvidiaError) {
+        console.error("\u274C NVIDIA agent workflow failed:", nvidiaError);
+        console.log("\u{1F504} Falling back to traditional chart generation...");
+      }
+    }
+    console.log("\u{1F4CA} Using traditional chart generation as fallback...");
+    const chartSpec = createFallbackChart(schema, sampleRows);
     const response = {
       chartSpec,
-      reasoning: reasoningResponse,
-      logs: ["AI reasoning completed", "Chart specification generated successfully"]
+      logs: ["Used fallback chart generation due to NVIDIA API unavailability"]
     };
     return new Response(JSON.stringify(response), {
       headers: {
@@ -2189,7 +3351,7 @@ function getIndexHtml() {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CSV AI Agent - Professional Data Analytics Platform</title>
+    <title>Business Analysis HR Agent - Professional Data Analytics Platform</title>
     <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"><\/script>
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"><\/script>
     <style>
@@ -2202,6 +3364,7 @@ function getIndexHtml() {
         }
         
         :root {
+            /* Primary brand colors - refined blue palette */
             --primary-50: #f0f9ff;
             --primary-100: #e0f2fe;
             --primary-200: #bae6fd;
@@ -2213,54 +3376,105 @@ function getIndexHtml() {
             --primary-800: #075985;
             --primary-900: #0c4a6e;
             
-            --gray-50: #f8fafc;
-            --gray-100: #f1f5f9;
-            --gray-200: #e2e8f0;
-            --gray-300: #cbd5e1;
-            --gray-400: #94a3b8;
-            --gray-500: #64748b;
-            --gray-600: #475569;
-            --gray-700: #334155;
-            --gray-800: #1e293b;
-            --gray-900: #0f172a;
+            /* Neutral colors - warmer grays */
+            --gray-25: #fefefe;
+            --gray-50: #fafbfc;
+            --gray-100: #f4f6f8;
+            --gray-200: #e6eaee;
+            --gray-300: #d0d7de;
+            --gray-400: #9ca3af;
+            --gray-500: #6b7280;
+            --gray-600: #4b5563;
+            --gray-700: #374151;
+            --gray-800: #1f2937;
+            --gray-900: #111827;
             
+            /* Status colors */
             --success-50: #f0fdf4;
+            --success-100: #dcfce7;
             --success-200: #bbf7d0;
             --success-500: #22c55e;
             --success-600: #16a34a;
+            --success-700: #15803d;
             
             --error-50: #fef2f2;
+            --error-100: #fee2e2;
             --error-200: #fecaca;
             --error-500: #ef4444;
             --error-600: #dc2626;
+            --error-700: #b91c1c;
             
             --warning-50: #fffbeb;
+            --warning-100: #fef3c7;
             --warning-200: #fed7aa;
             --warning-500: #f59e0b;
             --warning-600: #d97706;
+            --warning-700: #b45309;
             
-            --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
-            --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
-            --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
-            --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+            /* Enhanced shadows */
+            --shadow-xs: 0 1px 2px 0 rgba(0, 0, 0, 0.02);
+            --shadow-sm: 0 1px 3px 0 rgba(0, 0, 0, 0.08), 0 1px 2px -1px rgba(0, 0, 0, 0.04);
+            --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.08), 0 2px 4px -2px rgba(0, 0, 0, 0.04);
+            --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.08), 0 4px 6px -4px rgba(0, 0, 0, 0.04);
+            --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.08), 0 8px 10px -6px rgba(0, 0, 0, 0.04);
+            --shadow-2xl: 0 25px 50px -12px rgba(0, 0, 0, 0.12);
             
-            --border-radius-sm: 0.375rem;
-            --border-radius-md: 0.5rem;
-            --border-radius-lg: 0.75rem;
-            --border-radius-xl: 1rem;
+            /* Border radius scale */
+            --radius-xs: 0.25rem;
+            --radius-sm: 0.375rem;
+            --radius-md: 0.5rem;
+            --radius-lg: 0.75rem;
+            --radius-xl: 1rem;
+            --radius-2xl: 1.5rem;
+            
+            /* Spacing scale */
+            --space-1: 0.25rem;
+            --space-2: 0.5rem;
+            --space-3: 0.75rem;
+            --space-4: 1rem;
+            --space-5: 1.25rem;
+            --space-6: 1.5rem;
+            --space-8: 2rem;
+            --space-10: 2.5rem;
+            --space-12: 3rem;
+            --space-16: 4rem;
+            
+            /* Typography */
+            --font-size-xs: 0.75rem;
+            --font-size-sm: 0.875rem;
+            --font-size-base: 1rem;
+            --font-size-lg: 1.125rem;
+            --font-size-xl: 1.25rem;
+            --font-size-2xl: 1.5rem;
+            --font-size-3xl: 1.875rem;
+            
+            /* Line heights */
+            --leading-none: 1;
+            --leading-tight: 1.25;
+            --leading-snug: 1.375;
+            --leading-normal: 1.5;
+            --leading-relaxed: 1.625;
+            --leading-loose: 2;
         }
         
+        /* Base styles */
         body { 
             font-family: 'Inter', system-ui, -apple-system, sans-serif; 
-            background: var(--gray-50);
+            background: linear-gradient(135deg, var(--gray-25) 0%, var(--gray-50) 100%);
             color: var(--gray-900);
-            line-height: 1.6;
+            line-height: var(--leading-normal);
+            min-height: 100vh;
+            font-feature-settings: 'cv11', 'ss01';
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
         }
         
+        /* Header styles */
         .header {
-            background: white;
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(20px) saturate(180%);
             border-bottom: 1px solid var(--gray-200);
-            padding: 1.5rem 0;
+            padding: var(--space-6) 0;
             position: sticky;
             top: 0;
             z-index: 50;
@@ -2268,9 +3482,9 @@ function getIndexHtml() {
         }
         
         .header-content {
-            max-width: 1280px;
+            max-width: 1400px;
             margin: 0 auto;
-            padding: 0 2rem;
+            padding: 0 var(--space-8);
             display: flex;
             align-items: center;
             justify-content: space-between;
@@ -2279,127 +3493,216 @@ function getIndexHtml() {
         .logo {
             display: flex;
             align-items: center;
-            gap: 0.75rem;
+            gap: var(--space-4);
         }
         
         .logo-icon {
-            width: 2rem;
-            height: 2rem;
-            background: var(--primary-500);
-            border-radius: var(--border-radius-md);
+            width: 2.75rem;
+            height: 2.75rem;
+            background: linear-gradient(135deg, var(--primary-500) 0%, var(--primary-600) 100%);
+            border-radius: var(--radius-lg);
             display: flex;
             align-items: center;
             justify-content: center;
             color: white;
+            box-shadow: var(--shadow-md);
+            position: relative;
+        }
+        
+        .logo-icon::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(135deg, rgba(255,255,255,0.2) 0%, rgba(255,255,255,0.05) 100%);
+            border-radius: var(--radius-lg);
+            pointer-events: none;
         }
         
         .logo h1 {
-            font-size: 1.5rem;
+            font-size: var(--font-size-2xl);
             font-weight: 700;
             color: var(--gray-900);
+            letter-spacing: -0.025em;
         }
         
         .subtitle {
-            font-size: 0.875rem;
+            font-size: var(--font-size-sm);
             color: var(--gray-600);
-            margin-top: 0.25rem;
+            margin-top: var(--space-1);
+            font-weight: 500;
         }
         
+        /* Main layout */
         .main-container {
-            max-width: 1280px;
+            max-width: 1400px;
             margin: 0 auto;
-            padding: 2rem;
+            padding: var(--space-8);
         }
         
         .grid-layout {
             display: grid;
             grid-template-columns: 1fr 1fr;
-            gap: 2rem;
-            margin-bottom: 2rem;
+            gap: var(--space-8);
+            margin-bottom: var(--space-8);
         }
         
         .full-width {
             grid-column: 1 / -1;
         }
         
+        /* Enhanced card styles */
         .card { 
-            background: white;
+            background: rgba(255, 255, 255, 0.8);
+            backdrop-filter: blur(20px) saturate(180%);
             border: 1px solid var(--gray-200);
-            border-radius: var(--border-radius-xl);
-            padding: 1.5rem;
+            border-radius: var(--radius-2xl);
+            padding: var(--space-8);
             box-shadow: var(--shadow-sm);
-            transition: all 0.2s ease-in-out;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 1px;
+            background: linear-gradient(90deg, transparent 0%, var(--primary-200) 50%, transparent 100%);
+            opacity: 0;
+            transition: opacity 0.3s ease;
         }
         
         .card:hover {
-            box-shadow: var(--shadow-md);
+            box-shadow: var(--shadow-lg);
             border-color: var(--gray-300);
+            transform: translateY(-2px);
+        }
+        
+        .card:hover::before {
+            opacity: 1;
         }
         
         .card-header {
             display: flex;
             align-items: center;
-            gap: 0.75rem;
-            margin-bottom: 1.5rem;
+            gap: var(--space-3);
+            margin-bottom: var(--space-6);
         }
         
         .card-icon {
-            width: 1.25rem;
-            height: 1.25rem;
-            color: var(--primary-500);
+            width: 1.5rem;
+            height: 1.5rem;
+            color: var(--primary-600);
+            transition: color 0.2s ease;
+        }
+        
+        .card:hover .card-icon {
+            color: var(--primary-700);
         }
         
         .card-title {
-            font-size: 1.125rem;
+            font-size: var(--font-size-xl);
             font-weight: 600;
             color: var(--gray-900);
+            letter-spacing: -0.025em;
         }
         
+        /* Enhanced file upload area */
         .file-upload-area {
             border: 2px dashed var(--gray-300);
-            border-radius: var(--border-radius-lg);
-            padding: 2rem;
+            border-radius: var(--radius-xl);
+            padding: var(--space-10);
             text-align: center;
-            transition: all 0.2s ease-in-out;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
             cursor: pointer;
-            background: var(--gray-50);
+            background: linear-gradient(135deg, var(--gray-50) 0%, var(--gray-25) 100%);
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .file-upload-area::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(135deg, var(--primary-50) 0%, var(--primary-25) 100%);
+            opacity: 0;
+            transition: opacity 0.3s ease;
         }
         
         .file-upload-area:hover {
             border-color: var(--primary-400);
-            background: var(--primary-50);
+            transform: translateY(-1px);
+        }
+        
+        .file-upload-area:hover::before {
+            opacity: 1;
         }
         
         .file-upload-area.dragover {
             border-color: var(--primary-500);
-            background: var(--primary-100);
+            background: var(--primary-50);
+            transform: scale(1.02);
+            box-shadow: var(--shadow-lg);
         }
         
         .file-upload-area.has-file {
             border-color: var(--success-500);
-            background: var(--success-50);
+            background: linear-gradient(135deg, var(--success-50) 0%, var(--success-25) 100%);
         }
         
+        .upload-icon {
+            width: 4rem;
+            height: 4rem;
+            color: var(--gray-400);
+            margin: 0 auto var(--space-4);
+            transition: all 0.3s ease;
+        }
+        
+        .file-upload-area:hover .upload-icon {
+            color: var(--primary-500);
+            transform: scale(1.1);
+        }
+        
+        .upload-text {
+            font-weight: 600;
+            color: var(--gray-700);
+            margin-bottom: var(--space-2);
+            font-size: var(--font-size-lg);
+        }
+        
+        .upload-subtext {
+            font-size: var(--font-size-sm);
+            color: var(--gray-500);
+        }
+        
+        /* File selected state */
         .file-selected {
-            margin-top: 1rem;
-            padding: 0.75rem;
-            background: var(--primary-50);
+            margin-top: var(--space-4);
+            padding: var(--space-4);
+            background: linear-gradient(135deg, var(--primary-50) 0%, var(--primary-25) 100%);
             border: 1px solid var(--primary-200);
-            border-radius: var(--border-radius-md);
+            border-radius: var(--radius-lg);
             color: var(--primary-700);
-            font-size: 0.875rem;
+            font-size: var(--font-size-sm);
+            font-weight: 500;
             display: flex;
             align-items: center;
-            gap: 0.5rem;
+            gap: var(--space-3);
+            animation: slideInUp 0.3s ease-out;
         }
         
+        /* Progress styles */
         .upload-progress {
-            margin-top: 1rem;
-            padding: 1rem;
-            background: var(--primary-50);
+            margin-top: var(--space-4);
+            padding: var(--space-5);
+            background: linear-gradient(135deg, var(--primary-50) 0%, var(--primary-25) 100%);
             border: 1px solid var(--primary-200);
-            border-radius: var(--border-radius-md);
+            border-radius: var(--radius-lg);
             display: none;
+            animation: slideInUp 0.3s ease-out;
         }
         
         .upload-progress.show {
@@ -2412,91 +3715,98 @@ function getIndexHtml() {
             background: var(--gray-200);
             border-radius: 4px;
             overflow: hidden;
-            margin-top: 0.5rem;
+            margin-top: var(--space-3);
+            position: relative;
         }
         
         .progress-fill {
             height: 100%;
-            background: var(--primary-500);
+            background: linear-gradient(90deg, var(--primary-500) 0%, var(--primary-600) 100%);
             border-radius: 4px;
             transition: width 0.3s ease;
-            animation: pulse 2s infinite;
+            animation: shimmer 2s infinite;
         }
         
-        .upload-icon {
-            width: 3rem;
-            height: 3rem;
-            color: var(--gray-400);
-            margin: 0 auto 1rem;
-        }
-        
-        .upload-text {
-            font-weight: 500;
-            color: var(--gray-700);
-            margin-bottom: 0.5rem;
-        }
-        
-        .upload-subtext {
-            font-size: 0.875rem;
-            color: var(--gray-500);
-        }
-        
+        /* Enhanced input styles */
         .file-input {
             display: none;
         }
         
         .prompt-input {
             width: 100%;
-            min-height: 120px;
-            padding: 1rem;
-            border: 1px solid var(--gray-300);
-            border-radius: var(--border-radius-lg);
+            min-height: 140px;
+            padding: var(--space-5);
+            border: 1.5px solid var(--gray-300);
+            border-radius: var(--radius-xl);
             font-family: inherit;
-            font-size: 0.875rem;
+            font-size: var(--font-size-sm);
             resize: vertical;
-            transition: all 0.2s ease-in-out;
-            background: white;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            background: rgba(255, 255, 255, 0.8);
+            backdrop-filter: blur(10px);
+            line-height: var(--leading-relaxed);
         }
         
         .prompt-input:focus {
             outline: none;
             border-color: var(--primary-500);
-            box-shadow: 0 0 0 3px var(--primary-100);
+            box-shadow: 0 0 0 4px var(--primary-100);
+            transform: translateY(-1px);
         }
         
         .prompt-input::placeholder {
             color: var(--gray-400);
+            line-height: var(--leading-relaxed);
         }
         
+        /* Enhanced button styles */
         .btn {
             display: inline-flex;
             align-items: center;
-            gap: 0.5rem;
-            padding: 0.75rem 1.5rem;
+            justify-content: center;
+            gap: var(--space-2);
+            padding: var(--space-4) var(--space-6);
             border: none;
-            border-radius: var(--border-radius-md);
+            border-radius: var(--radius-lg);
             font-family: inherit;
-            font-size: 0.875rem;
-            font-weight: 500;
+            font-size: var(--font-size-sm);
+            font-weight: 600;
             cursor: pointer;
-            transition: all 0.2s ease-in-out;
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
             text-decoration: none;
+            position: relative;
+            overflow: hidden;
+            letter-spacing: 0.025em;
+        }
+        
+        .btn::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(135deg, rgba(255,255,255,0.2) 0%, rgba(255,255,255,0.05) 100%);
+            opacity: 0;
+            transition: opacity 0.2s ease;
+        }
+        
+        .btn:hover::before {
+            opacity: 1;
         }
         
         .btn-primary {
-            background: var(--primary-500);
+            background: linear-gradient(135deg, var(--primary-500) 0%, var(--primary-600) 100%);
             color: white;
-            box-shadow: var(--shadow-sm);
+            box-shadow: var(--shadow-md);
         }
         
         .btn-primary:hover {
-            background: var(--primary-600);
-            box-shadow: var(--shadow-md);
-            transform: translateY(-1px);
+            background: linear-gradient(135deg, var(--primary-600) 0%, var(--primary-700) 100%);
+            box-shadow: var(--shadow-lg);
+            transform: translateY(-2px);
         }
         
         .btn-primary:active {
             transform: translateY(0);
+            box-shadow: var(--shadow-sm);
         }
         
         .btn-primary:disabled {
@@ -2513,255 +3823,376 @@ function getIndexHtml() {
             box-shadow: none;
         }
         
+        .btn-primary:disabled::before {
+            opacity: 0;
+        }
+        
         .btn-secondary {
-            background: var(--gray-100);
+            background: rgba(255, 255, 255, 0.8);
             color: var(--gray-700);
-            border: 1px solid var(--gray-300);
+            border: 1.5px solid var(--gray-300);
+            backdrop-filter: blur(10px);
         }
         
         .btn-secondary:hover {
-            background: var(--gray-200);
+            background: var(--gray-50);
             border-color: var(--gray-400);
+            transform: translateY(-1px);
         }
         
         .btn-icon {
-            width: 1rem;
-            height: 1rem;
+            width: 1.125rem;
+            height: 1.125rem;
         }
         
+        /* Enhanced status messages */
         .status {
-            padding: 1rem;
-            border-radius: var(--border-radius-md);
-            margin: 1rem 0;
+            padding: var(--space-5);
+            border-radius: var(--radius-lg);
+            margin: var(--space-4) 0;
             display: flex;
             align-items: center;
-            gap: 0.75rem;
-            font-size: 0.875rem;
+            gap: var(--space-3);
+            font-size: var(--font-size-sm);
             font-weight: 500;
+            animation: slideInUp 0.3s ease-out;
+            backdrop-filter: blur(20px);
         }
         
         .status.success {
-            background: var(--success-50);
-            color: var(--success-600);
+            background: linear-gradient(135deg, var(--success-50) 0%, rgba(255,255,255,0.8) 100%);
+            color: var(--success-700);
             border: 1px solid var(--success-200);
         }
         
         .status.error {
-            background: var(--error-50);
-            color: var(--error-600);
+            background: linear-gradient(135deg, var(--error-50) 0%, rgba(255,255,255,0.8) 100%);
+            color: var(--error-700);
             border: 1px solid var(--error-200);
         }
         
         .status.info {
-            background: var(--primary-50);
-            color: var(--primary-600);
+            background: linear-gradient(135deg, var(--primary-50) 0%, rgba(255,255,255,0.8) 100%);
+            color: var(--primary-700);
             border: 1px solid var(--primary-200);
         }
         
         .status.warning {
-            background: var(--warning-50);
-            color: var(--warning-600);
+            background: linear-gradient(135deg, var(--warning-50) 0%, rgba(255,255,255,0.8) 100%);
+            color: var(--warning-700);
             border: 1px solid var(--warning-200);
         }
         
+        /* Loading animations */
         .loading-spinner {
-            width: 1rem;
-            height: 1rem;
+            width: 1.125rem;
+            height: 1.125rem;
             border: 2px solid transparent;
             border-top: 2px solid currentColor;
             border-radius: 50%;
             animation: spin 1s linear infinite;
         }
         
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-        
+        /* Metrics grid */
         .metrics-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 1rem;
-            margin: 1.5rem 0;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: var(--space-4);
+            margin: var(--space-6) 0;
         }
         
         .metric-card {
-            background: var(--gray-50);
+            background: linear-gradient(135deg, var(--gray-50) 0%, rgba(255,255,255,0.8) 100%);
             border: 1px solid var(--gray-200);
-            border-radius: var(--border-radius-md);
-            padding: 1rem;
+            border-radius: var(--radius-lg);
+            padding: var(--space-5);
             text-align: center;
+            transition: all 0.2s ease;
+            backdrop-filter: blur(10px);
+        }
+        
+        .metric-card:hover {
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-md);
         }
         
         .metric-value {
-            font-size: 1.5rem;
+            font-size: var(--font-size-2xl);
             font-weight: 700;
             color: var(--primary-600);
-            margin-bottom: 0.25rem;
+            margin-bottom: var(--space-1);
+            line-height: var(--leading-tight);
         }
         
         .metric-label {
-            font-size: 0.75rem;
-            font-weight: 500;
+            font-size: var(--font-size-xs);
+            font-weight: 600;
             color: var(--gray-600);
             text-transform: uppercase;
-            letter-spacing: 0.05em;
+            letter-spacing: 0.1em;
         }
         
+        /* Insights list */
         .insights-list {
             list-style: none;
-            margin: 1rem 0;
+            margin: var(--space-4) 0;
         }
         
         .insights-list li {
-            background: var(--gray-50);
+            background: linear-gradient(135deg, var(--gray-50) 0%, rgba(255,255,255,0.8) 100%);
             border: 1px solid var(--gray-200);
-            border-radius: var(--border-radius-md);
-            padding: 1rem;
-            margin-bottom: 0.75rem;
-            font-size: 0.875rem;
-            line-height: 1.5;
+            border-radius: var(--radius-lg);
+            padding: var(--space-4) var(--space-5);
+            margin-bottom: var(--space-3);
+            font-size: var(--font-size-sm);
+            line-height: var(--leading-relaxed);
             position: relative;
-            padding-left: 2.5rem;
+            padding-left: var(--space-10);
+            transition: all 0.2s ease;
+            backdrop-filter: blur(10px);
+        }
+        
+        .insights-list li:hover {
+            transform: translateX(4px);
+            box-shadow: var(--shadow-sm);
         }
         
         .insights-list li::before {
             content: '';
             position: absolute;
-            left: 1rem;
-            top: 1.25rem;
-            width: 0.25rem;
-            height: 0.25rem;
+            left: var(--space-4);
+            top: 1.125rem;
+            width: 0.375rem;
+            height: 0.375rem;
             background: var(--primary-500);
             border-radius: 50%;
+            box-shadow: 0 0 0 3px var(--primary-100);
         }
         
+        /* Charts grid */
         .charts-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(500px, 1fr));
-            gap: 2rem;
-            margin-top: 2rem;
+            grid-template-columns: repeat(auto-fit, minmax(600px, 1fr));
+            gap: var(--space-8);
+            margin-top: var(--space-8);
         }
         
         .chart-container {
-            background: white;
+            background: rgba(255, 255, 255, 0.9);
             border: 1px solid var(--gray-200);
-            border-radius: var(--border-radius-xl);
-            padding: 1.5rem;
+            border-radius: var(--radius-2xl);
+            padding: var(--space-6);
             box-shadow: var(--shadow-sm);
+            transition: all 0.3s ease;
+            backdrop-filter: blur(20px);
+        }
+        
+        .chart-container:hover {
+            box-shadow: var(--shadow-lg);
+            transform: translateY(-2px);
         }
         
         .chart-title {
-            font-size: 1rem;
+            font-size: var(--font-size-lg);
             font-weight: 600;
             color: var(--gray-900);
-            margin-bottom: 0.5rem;
+            margin-bottom: var(--space-2);
+            letter-spacing: -0.025em;
         }
         
         .chart-description {
-            font-size: 0.875rem;
+            font-size: var(--font-size-sm);
             color: var(--gray-600);
-            margin-bottom: 1.5rem;
+            margin-bottom: var(--space-6);
+            line-height: var(--leading-relaxed);
         }
         
+        /* Suggestions grid */
         .suggestions-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-            gap: 1rem;
-            margin-top: 1.5rem;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: var(--space-4);
+            margin-top: var(--space-6);
         }
         
         .suggestion-card {
-            background: white;
+            background: rgba(255, 255, 255, 0.8);
             border: 1px solid var(--gray-200);
-            border-radius: var(--border-radius-lg);
-            padding: 1rem;
+            border-radius: var(--radius-xl);
+            padding: var(--space-5);
             cursor: pointer;
-            transition: all 0.2s ease-in-out;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            backdrop-filter: blur(10px);
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .suggestion-card::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(135deg, var(--primary-50) 0%, transparent 100%);
+            opacity: 0;
+            transition: opacity 0.3s ease;
         }
         
         .suggestion-card:hover {
             border-color: var(--primary-300);
-            box-shadow: var(--shadow-md);
-            transform: translateY(-1px);
+            box-shadow: var(--shadow-lg);
+            transform: translateY(-3px);
+        }
+        
+        .suggestion-card:hover::before {
+            opacity: 1;
         }
         
         .suggestion-title {
             font-weight: 600;
             color: var(--gray-900);
-            margin-bottom: 0.5rem;
-            font-size: 0.875rem;
+            margin-bottom: var(--space-2);
+            font-size: var(--font-size-sm);
+            position: relative;
+            z-index: 1;
         }
         
         .suggestion-description {
-            font-size: 0.75rem;
+            font-size: var(--font-size-xs);
             color: var(--gray-600);
-            line-height: 1.4;
-            margin-bottom: 0.75rem;
+            line-height: var(--leading-relaxed);
+            margin-bottom: var(--space-3);
+            position: relative;
+            z-index: 1;
         }
         
         .suggestion-category {
             display: inline-block;
-            background: var(--primary-100);
+            background: linear-gradient(135deg, var(--primary-100) 0%, var(--primary-50) 100%);
             color: var(--primary-700);
-            padding: 0.25rem 0.5rem;
-            border-radius: var(--border-radius-sm);
-            font-size: 0.625rem;
-            font-weight: 500;
+            padding: var(--space-1) var(--space-3);
+            border-radius: var(--radius-md);
+            font-size: var(--font-size-xs);
+            font-weight: 600;
             text-transform: uppercase;
             letter-spacing: 0.05em;
+            position: relative;
+            z-index: 1;
         }
         
+        /* Reasoning section */
         .reasoning-section {
-            background: var(--primary-50);
+            background: linear-gradient(135deg, var(--primary-50) 0%, rgba(255,255,255,0.8) 100%);
             border: 1px solid var(--primary-200);
-            border-radius: var(--border-radius-lg);
-            padding: 1.5rem;
-            margin: 1.5rem 0;
+            border-radius: var(--radius-xl);
+            padding: var(--space-6);
+            margin: var(--space-6) 0;
+            backdrop-filter: blur(20px);
         }
         
         .reasoning-title {
             font-weight: 600;
             color: var(--primary-700);
-            margin-bottom: 1rem;
+            margin-bottom: var(--space-4);
             display: flex;
             align-items: center;
-            gap: 0.5rem;
+            gap: var(--space-2);
+            font-size: var(--font-size-lg);
         }
         
         .reasoning-content {
-            font-size: 0.875rem;
+            font-size: var(--font-size-sm);
             color: var(--gray-700);
-            line-height: 1.5;
+            line-height: var(--leading-relaxed);
         }
         
         .section-title {
-            font-size: 1.25rem;
+            font-size: var(--font-size-xl);
             font-weight: 600;
             color: var(--gray-900);
-            margin-bottom: 1rem;
+            margin-bottom: var(--space-4);
             display: flex;
             align-items: center;
-            gap: 0.75rem;
+            gap: var(--space-3);
+            letter-spacing: -0.025em;
+        }
+        
+        /* Animations */
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        @keyframes shimmer {
+            0% { background-position: -200px 0; }
+            100% { background-position: calc(200px + 100%) 0; }
+        }
+        
+        @keyframes slideInUp {
+            from { 
+                opacity: 0; 
+                transform: translateY(20px); 
+            }
+            to { 
+                opacity: 1; 
+                transform: translateY(0); 
+            }
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        .fade-in {
+            animation: fadeIn 0.6s ease-out;
+        }
+        
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        
+        ::-webkit-scrollbar-track {
+            background: var(--gray-100);
+            border-radius: 4px;
+        }
+        
+        ::-webkit-scrollbar-thumb {
+            background: linear-gradient(135deg, var(--gray-400) 0%, var(--gray-500) 100%);
+            border-radius: 4px;
+            transition: background 0.2s ease;
+        }
+        
+        ::-webkit-scrollbar-thumb:hover {
+            background: linear-gradient(135deg, var(--gray-500) 0%, var(--gray-600) 100%);
         }
         
         /* Responsive Design */
+        @media (max-width: 1200px) {
+            .charts-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+        
         @media (max-width: 768px) {
             .grid-layout {
                 grid-template-columns: 1fr;
-                gap: 1rem;
+                gap: var(--space-6);
             }
             
             .main-container {
-                padding: 1rem;
+                padding: var(--space-4);
             }
             
             .header-content {
-                padding: 0 1rem;
+                padding: 0 var(--space-4);
+            }
+            
+            .card {
+                padding: var(--space-6);
             }
             
             .charts-grid {
                 grid-template-columns: 1fr;
-                gap: 1rem;
+                gap: var(--space-6);
             }
             
             .suggestions-grid {
@@ -2771,34 +4202,62 @@ function getIndexHtml() {
             .metrics-grid {
                 grid-template-columns: repeat(2, 1fr);
             }
+            
+            .upload-icon {
+                width: 3rem;
+                height: 3rem;
+            }
+            
+            .file-upload-area {
+                padding: var(--space-8);
+            }
+            
+            .logo h1 {
+                font-size: var(--font-size-xl);
+            }
         }
         
-        /* Animations */
-        .fade-in {
-            animation: fadeIn 0.5s ease-out;
+        @media (max-width: 480px) {
+            .main-container {
+                padding: var(--space-3);
+            }
+            
+            .header-content {
+                padding: 0 var(--space-3);
+            }
+            
+            .card {
+                padding: var(--space-4);
+                border-radius: var(--radius-xl);
+            }
+            
+            .metrics-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .logo h1 {
+                font-size: var(--font-size-lg);
+            }
         }
         
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(10px); }
-            to { opacity: 1; transform: translateY(0); }
+        /* High contrast mode support */
+        @media (prefers-contrast: high) {
+            .card {
+                border-width: 2px;
+            }
+            
+            .btn {
+                border-width: 2px;
+            }
         }
         
-        /* Scrollbar */
-        ::-webkit-scrollbar {
-            width: 6px;
-        }
-        
-        ::-webkit-scrollbar-track {
-            background: var(--gray-100);
-        }
-        
-        ::-webkit-scrollbar-thumb {
-            background: var(--gray-400);
-            border-radius: 3px;
-        }
-        
-        ::-webkit-scrollbar-thumb:hover {
-            background: var(--gray-500);
+        /* Reduced motion support */
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after {
+                animation-duration: 0.01ms !important;
+                animation-iteration-count: 1 !important;
+                transition-duration: 0.01ms !important;
+            }
         }
     </style>
 </head>
@@ -2810,7 +4269,7 @@ function getIndexHtml() {
                     <i data-lucide="bar-chart-3"></i>
                 </div>
                 <div>
-                    <h1>CSV AI Agent</h1>
+                    <h1>Business Analysis HR Agent</h1>
                     <p class="subtitle">Professional Data Analytics Platform</p>
                 </div>
             </div>
@@ -2832,12 +4291,12 @@ function getIndexHtml() {
                 <div id="fileSelected" class="file-selected" style="display: none;">
                     <i data-lucide="file-check"></i>
                     <span id="fileName"></span>
-                    <button onclick="clearFile()" style="margin-left: auto; background: none; border: none; color: var(--gray-500); cursor: pointer;">
+                    <button onclick="clearFile()" style="margin-left: auto; background: none; border: none; color: var(--gray-500); cursor: pointer; padding: var(--space-1); border-radius: var(--radius-sm); transition: all 0.2s ease;">
                         <i data-lucide="x"></i>
                     </button>
                 </div>
                 <div id="uploadProgress" class="upload-progress">
-                    <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem;">
+                    <div style="display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-2);">
                         <div class="loading-spinner"></div>
                         <span>Uploading and analyzing your data...</span>
                     </div>
@@ -2846,7 +4305,7 @@ function getIndexHtml() {
                     </div>
                 </div>
                 <input type="file" id="csvFile" accept=".csv" class="file-input">
-                <button id="uploadBtn" onclick="uploadFile()" class="btn btn-primary" style="margin-top: 1rem; width: 100%;" disabled>
+                <button id="uploadBtn" onclick="uploadFile()" class="btn btn-primary" style="margin-top: var(--space-4); width: 100%;" disabled>
                     <i data-lucide="zap" class="btn-icon"></i>
                     Analyze Dataset
                 </button>
@@ -2858,14 +4317,15 @@ function getIndexHtml() {
                     <i data-lucide="message-circle" class="card-icon"></i>
                     <h2 class="card-title">Query Interface</h2>
                 </div>
-                <textarea id="promptInput" class="prompt-input" placeholder="Ask questions about your data...
+                <textarea id="promptInput" class="prompt-input" placeholder="Ask questions about your HR data...
 
 Examples:
-\u2022 Show revenue trends over time
-\u2022 Compare performance by category  
-\u2022 Display top 10 products by sales
-\u2022 Create a correlation analysis"></textarea>
-                <button onclick="generateChart()" class="btn btn-primary" style="margin-top: 1rem; width: 100%;">
+\u2022 Show employee satisfaction trends over time
+\u2022 Compare performance by department  
+\u2022 Display top 10 employees by performance rating
+\u2022 Analyze salary distribution by position level
+\u2022 Show hiring trends and retention rates"></textarea>
+                <button onclick="generateChart()" class="btn btn-primary" style="margin-top: var(--space-4); width: 100%;">
                     <i data-lucide="sparkles" class="btn-icon"></i>
                     Generate Visualization
                 </button>
@@ -2889,7 +4349,7 @@ Examples:
                     <i data-lucide="bar-chart" class="card-icon"></i>
                     <h2 class="card-title">Automatic Dashboard</h2>
                 </div>
-                <p style="color: var(--gray-600); margin-bottom: 1.5rem;">AI-generated visualizations based on your data characteristics</p>
+                <p style="color: var(--gray-600); margin-bottom: var(--space-6); line-height: var(--leading-relaxed);">AI-generated visualizations based on your data characteristics</p>
                 <div id="autoCharts" class="charts-grid"></div>
             </div>
         </div>
@@ -2920,7 +4380,7 @@ Examples:
                     <i data-lucide="compass" class="card-icon"></i>
                     <h2 class="card-title">Suggested Explorations</h2>
                 </div>
-                <p style="color: var(--gray-600); margin-bottom: 1.5rem;">AI-generated questions tailored to your specific dataset</p>
+                <p style="color: var(--gray-600); margin-bottom: var(--space-6); line-height: var(--leading-relaxed);">AI-generated questions tailored to your specific dataset</p>
                 <div id="suggestions" class="suggestions-grid"></div>
             </div>
         </div>
@@ -2932,6 +4392,8 @@ Examples:
         
         let currentDatasetId = null;
         let currentAnalysis = null;
+        let queryHistory = [];
+        let chartHistory = [];
 
         // Upload and analyze CSV file
         async function uploadFile() {
@@ -3038,27 +4500,99 @@ Examples:
             }
         }
         
-        // Clear file selection
+        // Enhanced dataset clearing with complete state reset
         function clearFile() {
             const fileInput = document.getElementById('csvFile');
             const uploadArea = document.getElementById('uploadArea');
             const fileSelected = document.getElementById('fileSelected');
             const uploadBtn = document.getElementById('uploadBtn');
             const statusDiv = document.getElementById('uploadStatus');
+            const queryStatus = document.getElementById('queryStatus');
+            const promptInput = document.getElementById('promptInput');
             
+            // Show confirmation dialog for better UX
+            if (currentDatasetId && (queryHistory.length > 0 || chartHistory.length > 0)) {
+                if (!confirm('This will clear all your current analysis and charts. Are you sure you want to continue?')) {
+                    return;
+                }
+            }
+            
+            // Reset file input and UI
             fileInput.value = '';
             uploadArea.classList.remove('has-file');
             fileSelected.style.display = 'none';
             uploadBtn.disabled = true;
             uploadBtn.innerHTML = '<i data-lucide="zap" class="btn-icon"></i>Analyze Dataset';
             statusDiv.innerHTML = '';
+            queryStatus.innerHTML = '';
+            promptInput.value = '';
+            promptInput.placeholder = "Ask questions about your data...
+
+Examples:
+\u2022 Show trends over time
+\u2022 Compare performance by category
+\u2022 Display top 10 items by value
+\u2022 Analyze distribution by key metrics
+\u2022 Show correlations between variables";
             
-            // Hide all results sections
-            document.getElementById('analysisResults').style.display = 'none';
-            document.getElementById('autoChartsSection').style.display = 'none';
-            document.getElementById('suggestionsSection').style.display = 'none';
-            document.getElementById('reasoningSection').style.display = 'none';
-            document.getElementById('chartSection').style.display = 'none';
+            // Clear global state completely
+            currentDatasetId = null;
+            currentAnalysis = null;
+            queryHistory = [];
+            chartHistory = [];
+            
+            // Hide all results sections with fade out animation
+            const sectionsToHide = [
+                'analysisResults', 'autoChartsSection', 'suggestionsSection', 
+                'reasoningSection', 'chartSection', 'queryHistorySection'
+            ];
+            
+            sectionsToHide.forEach(sectionId => {
+                const section = document.getElementById(sectionId);
+                if (section) {
+                    section.style.opacity = '0';
+                    section.style.transform = 'translateY(-10px)';
+                    setTimeout(() => {
+                        section.style.display = 'none';
+                        section.style.opacity = '';
+                        section.style.transform = '';
+                    }, 300);
+                }
+            });
+            
+            // Remove all dynamically created sections
+            const dynamicSections = document.querySelectorAll('[id$="Section"]:not([id^="auto"]):not([id^="suggestions"]):not([id^="analysis"]):not([id^="reasoning"]):not([id^="chart"])');
+            dynamicSections.forEach(section => {
+                if (section.id.includes('code') || section.id.includes('query') || section.id.includes('result')) {
+                    section.remove();
+                }
+            });
+            
+            // Remove dynamically created code section if exists
+            const codeSection = document.getElementById('codeSection');
+            if (codeSection) {
+                codeSection.remove();
+            }
+            
+            // Clear any stored chart containers
+            const chartContainers = document.querySelectorAll('[id*="Chart"], [id*="chart"]');
+            chartContainers.forEach(container => {
+                if (container.id !== 'chartSection' && container.id !== 'chartContainer') {
+                    container.innerHTML = '';
+                }
+            });
+            
+            // Reset scroll position
+            setTimeout(() => {
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+            }, 400);
+            
+            // Show success message
+            statusDiv.innerHTML = '<div class="status success" style="opacity: 0; animation: fadeIn 0.5s ease-out forwards;"><i data-lucide="check-circle"></i>Dataset cleared successfully. Upload a new file to begin analysis.</div>';
+            
+            setTimeout(() => {
+                statusDiv.innerHTML = '';
+            }, 3000);
             
             lucide.createIcons();
         }
@@ -3095,16 +4629,69 @@ Examples:
                 const result = await response.json();
 
                 if (response.ok) {
-                    statusDiv.innerHTML = '<div class="status success"><i data-lucide="check-circle"></i>AI analysis complete! Chart generated successfully!</div>';
+                    statusDiv.innerHTML = '<div class="status success"><i data-lucide="check-circle"></i>AI analysis complete! Results generated successfully!</div>';
                     lucide.createIcons();
                     
-                    // Show AI reasoning if available
-                    if (result.reasoning) {
+                    // Store query in history for better UX
+                    const queryData = {
+                        query: promptInput.value,
+                        timestamp: new Date().toISOString(),
+                        result: result
+                    };
+                    queryHistory.push(queryData);
+                    
+                    // Handle NVIDIA agent workflow results
+                    if (result.thinking || result.explanation) {
+                        showNvidiaReasoning(result.thinking, result.explanation);
+                    } else if (result.reasoning) {
+                        // Fallback to traditional reasoning display
                         showReasoning(result.reasoning);
                     }
                     
-                    // Show the generated chart
-                    showChart(result.chartSpec);
+                    // Show code if available
+                    if (result.code) {
+                        showGeneratedCode(result.code, result.shouldPlot);
+                    }
+                    
+                    // Show execution result or chart
+                    if (result.result) {
+                        showExecutionResult(result.result);
+                        if (result.result.type === 'plot') {
+                            chartHistory.push({
+                                title: result.result.description || 'Custom Chart',
+                                query: promptInput.value,
+                                timestamp: new Date().toISOString(),
+                                chartSpec: result.result.chartSpec
+                            });
+                        }
+                    } else if (result.chartSpec) {
+                        showChart(result.chartSpec);
+                        chartHistory.push({
+                            title: 'Custom Visualization',
+                            query: promptInput.value,
+                            timestamp: new Date().toISOString(),
+                            chartSpec: result.chartSpec
+                        });
+                    }
+                    
+                    // Show query history if multiple queries exist
+                    if (queryHistory.length > 1) {
+                        showQueryHistory();
+                    }
+                    
+                    // Clear the input after successful query
+                    promptInput.value = '';
+                    
+                    // Scroll to custom visualization section
+                    setTimeout(() => {
+                        const chartSection = document.getElementById('chartSection');
+                        if (chartSection && chartSection.style.display !== 'none') {
+                            chartSection.scrollIntoView({ 
+                                behavior: 'smooth', 
+                                block: 'start' 
+                            });
+                        }
+                    }, 500);
                     
                 } else {
                     statusDiv.innerHTML = '<div class="status error"><i data-lucide="x-circle"></i>Query failed: ' + result.error + '</div>';
@@ -3172,14 +4759,37 @@ Examples:
             autoCharts.forEach((chart, index) => {
                 const chartDiv = document.createElement('div');
                 chartDiv.className = 'chart-container';
-                chartDiv.innerHTML = '<h3 class="chart-title">' + chart.title + '</h3><p class="chart-description">' + chart.description + '</p><div id="autoChart' + index + '" style="height: 400px;"></div>';
+                // Handle different chart title/description formats
+                const title = chart.title || chart.metadata?.title || ('Chart ' + (index + 1));
+                const description = chart.description || chart.metadata?.businessInsight || 'Data visualization';
+                
+                chartDiv.innerHTML = '<h3 class="chart-title">' + title + '</h3><p class="chart-description">' + description + '</p><div id="autoChart' + index + '" style="height: 400px;"></div>';
                 autoChartsContainer.appendChild(chartDiv);
                 
-                // Render the chart
+                // Render the chart with improved error handling
                 setTimeout(() => {
                     try {
-                        Plotly.newPlot('autoChart' + index, chart.chartSpec.data, {
-                            ...chart.chartSpec.layout,
+                        // Handle different chart structure formats
+                        let chartData, chartLayout;
+                        
+                        if (chart.chartSpec && chart.chartSpec.data) {
+                            // Traditional format: { chartSpec: { data: [...], layout: {...} } }
+                            chartData = chart.chartSpec.data;
+                            chartLayout = chart.chartSpec.layout;
+                        } else if (chart.data) {
+                            // Direct format: { data: [...], layout: {...} }
+                            chartData = chart.data;
+                            chartLayout = chart.layout;
+                        } else {
+                            throw new Error('Invalid chart structure - no data found');
+                        }
+                        
+                        if (!chartData || !Array.isArray(chartData) || chartData.length === 0) {
+                            throw new Error('Chart data is empty or invalid');
+                        }
+                        
+                        Plotly.newPlot('autoChart' + index, chartData, {
+                            ...(chartLayout || {}),
                             font: { family: 'Inter, sans-serif', size: 12, color: '#1e293b' },
                             plot_bgcolor: 'rgba(255, 255, 255, 0.8)',
                             paper_bgcolor: 'rgba(255, 255, 255, 0.8)'
@@ -3189,9 +4799,21 @@ Examples:
                             displaylogo: false,
                             modeBarButtonsToRemove: ['pan2d', 'lasso2d', 'select2d']
                         });
+                        
+                        console.log('\u2705 Auto chart ' + index + ' rendered successfully');
                     } catch (error) {
-                        console.error('Auto chart rendering error:', error);
-                        document.getElementById('autoChart' + index).innerHTML = '<div style="text-align: center; color: var(--gray-500); padding: 40px;"><i data-lucide="alert-circle" style="width: 2rem; height: 2rem; margin-bottom: 1rem;"></i><p>Chart rendering failed</p><small>Chart type: ' + (chart.chartSpec.data[0]?.type || 'unknown') + '</small></div>';
+                        console.error('\u274C Auto chart rendering error:', error);
+                        console.log('\u{1F41B} Chart object structure:', chart);
+                        
+                        const errorDetails = {
+                            hasChartSpec: !!chart.chartSpec,
+                            hasData: !!chart.data,
+                            hasTitle: !!chart.title,
+                            chartSpecKeys: chart.chartSpec ? Object.keys(chart.chartSpec) : 'none',
+                            error: error.message
+                        };
+                        
+                        document.getElementById('autoChart' + index).innerHTML = '<div style="text-align: center; color: var(--error-600); padding: 40px; background: var(--error-50); border-radius: 8px; border: 1px solid var(--error-200);"><i data-lucide="alert-circle" style="width: 2rem; height: 2rem; margin-bottom: 1rem;"></i><h4>Chart Rendering Failed</h4><p style="margin: 8px 0; font-size: 0.9rem;">' + error.message + '</p><details style="margin-top: 12px; font-size: 0.8rem; text-align: left;"><summary style="cursor: pointer; color: var(--primary-600);">Debug Info</summary><pre style="background: white; padding: 8px; border-radius: 4px; margin-top: 8px; overflow: auto;">' + JSON.stringify(errorDetails, null, 2) + '</pre></details></div>';
                         lucide.createIcons();
                     }
                 }, 100 * index);
@@ -3228,6 +4850,300 @@ Examples:
             lucide.createIcons();
         }
 
+        // Display NVIDIA agent reasoning with thinking
+        function showNvidiaReasoning(thinking, explanation) {
+            const reasoningSection = document.getElementById('reasoningSection');
+            const reasoningContent = document.getElementById('reasoningContent');
+            
+            let contentHtml = '<div class="reasoning-title"><i data-lucide="brain"></i>NVIDIA AI Agent Analysis</div>';
+            contentHtml += '<div class="reasoning-content">';
+            
+            if (thinking) {
+                contentHtml += '<details class="thinking" open>';
+                contentHtml += '<summary style="font-weight: 600; margin-bottom: 0.5rem; color: var(--primary-600); cursor: pointer;">\u{1F914} Model Thinking Process</summary>';
+                contentHtml += '<pre style="background: var(--gray-50); padding: 1rem; border-radius: 0.5rem; font-size: 0.85rem; color: var(--gray-700); white-space: pre-wrap; margin: 0.5rem 0;">' + thinking + '</pre>';
+                contentHtml += '</details>';
+            }
+            
+            if (explanation) {
+                contentHtml += '<h4 style="font-weight: 600; margin: 1rem 0 0.5rem 0; color: var(--gray-800);">\u{1F9E0} Analysis Explanation</h4>';
+                contentHtml += '<p style="margin-bottom: 1rem; line-height: 1.6; color: var(--gray-700);">' + explanation + '</p>';
+            }
+            
+            contentHtml += '</div>';
+            reasoningContent.innerHTML = contentHtml;
+            reasoningSection.style.display = 'block';
+            lucide.createIcons();
+        }
+
+        // Display generated Python code
+        function showGeneratedCode(code, shouldPlot) {
+            // Create or update code section
+            let codeSection = document.getElementById('codeSection');
+            if (!codeSection) {
+                codeSection = document.createElement('div');
+                codeSection.id = 'codeSection';
+                codeSection.className = 'full-width';
+                codeSection.innerHTML = '<div class="card fade-in"><div class="card-header"><i data-lucide="code" class="card-icon"></i><h2 class="card-title">Generated Python Code</h2></div><div id="codeContent"></div></div>';
+                document.querySelector('.main-container').appendChild(codeSection);
+            }
+            
+            const codeContent = document.getElementById('codeContent');
+            let contentHtml = '<details class="code" open>';
+            contentHtml += '<summary style="font-weight: 600; margin-bottom: 0.5rem; color: var(--primary-600); cursor: pointer;">\u{1F4DD} Python Code ' + (shouldPlot ? '(with visualization)' : '(data analysis)') + '</summary>';
+            contentHtml += '<pre style="background: var(--gray-900); color: var(--gray-100); padding: 1rem; border-radius: 0.5rem; font-size: 0.85rem; overflow-x: auto; margin: 0.5rem 0;"><code class="language-python">' + code + '</code></pre>';
+            contentHtml += '</details>';
+            
+            codeContent.innerHTML = contentHtml;
+            codeSection.style.display = 'block';
+            lucide.createIcons();
+        }
+
+        // Simplified markdown formatting for compatibility
+        function formatMarkdownLikeText(text) {
+            if (!text || typeof text !== 'string') return text;
+            
+            // Clean up the text first
+            text = text.trim();
+            
+            // Simple formatting without complex regex
+            let formatted = text;
+            
+            // Bold formatting
+            formatted = formatted.replace(/**(.*?)**/g, '<strong>$1</strong>');
+            formatted = formatted.replace(/*(.*?)*/g, '<em>$1</em>');
+            
+            // Simple line breaks
+            formatted = formatted.replace(/
+
+/g, '</p><p style="margin: 1rem 0; line-height: 1.6; color: var(--gray-700);">');
+            formatted = formatted.replace(/
+/g, '<br>');
+            
+            // Wrap in paragraph if needed
+            if (!formatted.includes('<p>')) {
+                formatted = '<p style="margin: 1rem 0; line-height: 1.6; color: var(--gray-700);">' + formatted + '</p>';
+            }
+            
+            return formatted;
+        }
+
+        // Enhanced data result formatting with improved styling
+        function formatDataResult(data) {
+            if (typeof data === 'string') {
+                // Enhanced string formatting with markdown support
+                if (data.includes('**') || data.includes('*') || data.includes('#')) {
+                    return formatMarkdownLikeText(data);
+                }
+                
+                // Handle multi-line strings nicely
+                if (data.includes('
+')) {
+                    return '<div style="background: var(--gray-50); padding: 1rem; border-radius: 8px; border-left: 4px solid var(--primary-400); line-height: 1.6; color: var(--gray-700);">' + 
+                           data.replace(/
+/g, '<br>') + '</div>';
+                }
+                
+                return '<p style="color: var(--gray-700); line-height: 1.6; margin: 0.5rem 0;">' + data + '</p>';
+            }
+            
+            if (Array.isArray(data)) {
+                if (data.length === 0) {
+                    return '<div style="text-align: center; padding: 2rem; background: var(--gray-50); border-radius: 8px; color: var(--gray-500);"><i data-lucide="search-x" style="width: 2rem; height: 2rem; margin-bottom: 0.5rem;"></i><p>No data found matching the criteria.</p></div>';
+                }
+                
+                // Enhanced list formatting for simple arrays
+                if (data.every(item => typeof item === 'string' || typeof item === 'number')) {
+                    const listItems = data.map((item, index) => 
+                        '<li style="margin-bottom: 0.5rem; padding: 0.25rem 0; border-bottom: 1px solid var(--gray-100); color: var(--gray-700);">' + 
+                        '<span style="color: var(--primary-600); font-weight: 500; margin-right: 0.5rem;">' + (index + 1) + '.</span>' + 
+                        item + '</li>'
+                    ).join('');
+                    
+                    return '<ul style="margin: 1rem 0; padding: 0; list-style: none; background: white; border-radius: 8px; border: 1px solid var(--gray-200); overflow: hidden;">' + 
+                           listItems + '</ul>';
+                }
+                
+                // Enhanced table format for complex arrays
+                if (data.length > 0 && typeof data[0] === 'object') {
+                    return formatArrayAsTable(data);
+                }
+                
+                // Fallback to JSON with better styling
+                return '<details style="margin: 1rem 0; background: white; border-radius: 8px; border: 1px solid var(--gray-200); overflow: hidden;">' +
+                       '<summary style="padding: 1rem; background: var(--gray-50); cursor: pointer; font-weight: 600; color: var(--primary-700);">View Data Array (' + data.length + ' items)</summary>' +
+                       '<pre style="padding: 1rem; margin: 0; font-size: 0.9rem; overflow-x: auto; white-space: pre-wrap; color: var(--gray-700);">' + 
+                       JSON.stringify(data, null, 2) + '</pre></details>';
+            }
+            
+            if (typeof data === 'object' && data !== null) {
+                const keys = Object.keys(data);
+                
+                // Enhanced key-value display for simple objects
+                if (keys.length <= 10 && keys.every(key => 
+                    typeof data[key] === 'string' || typeof data[key] === 'number' || typeof data[key] === 'boolean'
+                )) {
+                    const keyValuePairs = keys.map(key => 
+                        '<div style="display: flex; justify-content: space-between; align-items: center; padding: 0.75rem; border-bottom: 1px solid var(--gray-100); last:border-bottom: none;">' +
+                        '<span style="font-weight: 600; color: var(--primary-700);">' + key + ':</span>' +
+                        '<span style="color: var(--gray-700); text-align: right;">' + data[key] + '</span>' +
+                        '</div>'
+                    ).join('');
+                    
+                    return '<div style="background: white; border-radius: 8px; border: 1px solid var(--gray-200); overflow: hidden; margin: 1rem 0;">' +
+                           keyValuePairs + '</div>';
+                }
+                
+                // Complex object with collapsible JSON
+                return '<details style="margin: 1rem 0; background: white; border-radius: 8px; border: 1px solid var(--gray-200); overflow: hidden;">' +
+                       '<summary style="padding: 1rem; background: var(--gray-50); cursor: pointer; font-weight: 600; color: var(--primary-700);">View Object Data</summary>' +
+                       '<pre style="padding: 1rem; margin: 0; font-size: 0.9rem; overflow-x: auto; white-space: pre-wrap; color: var(--gray-700);">' + 
+                       JSON.stringify(data, null, 2) + '</pre></details>';
+            }
+            
+            return '<p style="color: var(--gray-700); line-height: 1.6; margin: 0.5rem 0;">' + String(data) + '</p>';
+        }
+        
+        // Helper function to format arrays as tables
+        function formatArrayAsTable(data) {
+            if (!data || data.length === 0) return '<p>No data available</p>';
+            
+            const keys = Object.keys(data[0]);
+            const maxRows = Math.min(data.length, 10); // Limit to 10 rows for performance
+            
+            let html = '<div style="overflow-x: auto; margin: 1rem 0; border-radius: 8px; border: 1px solid var(--gray-200); background: white;">';
+            html += '<table style="width: 100%; border-collapse: collapse; font-size: 0.9em;">';
+            
+            // Header
+            html += '<thead><tr style="background: var(--primary-50); border-bottom: 2px solid var(--primary-200);">';
+            keys.forEach(key => {
+                html += '<th style="padding: 0.75rem; text-align: left; font-weight: 600; color: var(--primary-700); border-right: 1px solid var(--gray-200);">' + key + '</th>';
+            });
+            html += '</tr></thead>';
+            
+            // Body
+            html += '<tbody>';
+            for (let i = 0; i < maxRows; i++) {
+                const row = data[i];
+                html += '<tr style="border-bottom: 1px solid var(--gray-100); hover:background-color: var(--gray-50);">';
+                keys.forEach(key => {
+                    const value = row[key];
+                    const displayValue = value !== null && value !== undefined ? String(value) : '-';
+                    html += '<td style="padding: 0.75rem; border-right: 1px solid var(--gray-100); color: var(--gray-700);">' + displayValue + '</td>';
+                });
+                html += '</tr>';
+            }
+            html += '</tbody></table>';
+            
+            if (data.length > maxRows) {
+                html += '<div style="padding: 0.75rem; background: var(--gray-50); text-align: center; color: var(--gray-600); font-size: 0.875rem; border-top: 1px solid var(--gray-200);">Showing first ' + maxRows + ' rows of ' + data.length + ' total rows</div>';
+            }
+            
+            html += '</div>';
+            return html;
+        }
+
+        // Display execution result
+        function showExecutionResult(result) {
+            const chartSection = document.getElementById('chartSection');
+            const chartContainer = document.getElementById('chartContainer');
+            
+            if (result.type === 'plot' && result.chartSpec) {
+                // For plot results with chart spec, render the actual Plotly chart
+                try {
+                    chartContainer.innerHTML = '<div id="nvidiaChart" style="height: 500px;"></div><div style="text-align: center; margin-top: 1rem; color: var(--gray-600); font-size: 0.875rem;"><i data-lucide="zap" style="width: 16px; height: 16px; margin-right: 4px;"></i>Generated from Python code \u2022 ' + (result.dataPoints || 0) + ' data points</div>';
+                    
+                    // Render the actual Plotly chart
+                    Plotly.newPlot('nvidiaChart', result.chartSpec.data, {
+                        ...result.chartSpec.layout,
+                        font: { family: 'Inter, sans-serif', size: 12, color: '#1e293b' },
+                        plot_bgcolor: 'rgba(255, 255, 255, 0.8)',
+                        paper_bgcolor: 'rgba(255, 255, 255, 0.8)',
+                        margin: { l: 60, r: 40, t: 60, b: 60 }
+                    }, {
+                        responsive: true,
+                        displayModeBar: true,
+                        displaylogo: false,
+                        modeBarButtonsToRemove: ['pan2d', 'lasso2d', 'select2d', 'autoScale2d']
+                    });
+                    
+                    console.log('\u2705 NVIDIA chart rendered successfully');
+                } catch (error) {
+                    console.error('\u274C Error rendering NVIDIA chart:', error);
+                    chartContainer.innerHTML = '<div style="padding: 40px; text-align: center; color: var(--error-600); background: var(--error-50); border-radius: var(--radius-lg); border: 2px dashed var(--error-300);"><i data-lucide="alert-triangle" style="width: 3rem; height: 3rem; margin-bottom: 1rem;"></i><h3>Chart Rendering Error</h3><p>Failed to render the generated visualization</p><small style="color: var(--gray-600);">Error: ' + error.message + '</small></div>';
+                }
+            } else if (result.type === 'plot') {
+                // For plot results without chart spec, show placeholder
+                chartContainer.innerHTML = '<div style="padding: 40px; text-align: center; color: var(--primary-600); background: var(--primary-50); border-radius: var(--radius-lg); border: 2px dashed var(--primary-300);"><i data-lucide="image" style="width: 3rem; height: 3rem; margin-bottom: 1rem;"></i><h3>Visualization Generated</h3><p>' + (result.description || 'Python matplotlib chart generated successfully') + '</p><small style="color: var(--gray-600);">Interactive visualization ready</small></div>';
+            } else {
+                // For data results, format them nicely
+                const dataToShow = result.value || result.data || result;
+                const formattedData = formatDataResult(dataToShow);
+                
+                chartContainer.innerHTML = '<div style="padding: 20px; background: var(--gray-50); border-radius: var(--radius-lg);"><h4 style="color: var(--gray-800); margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem;"><i data-lucide="table" style="width: 20px; height: 20px;"></i>Analysis Result</h4><div style="color: var(--gray-700); line-height: 1.6;">' + formattedData + '</div></div>';
+            }
+            
+            chartSection.style.display = 'block';
+            lucide.createIcons();
+        }
+
+
+
+        // Format statistics data nicely
+        function formatStatistics(stats) {
+            let html = '<div style="overflow-x: auto;"><table style="width: 100%; border-collapse: collapse; font-size: 0.9em;">';
+            html += '<thead><tr style="background: var(--gray-100); border-bottom: 2px solid var(--gray-300);">';
+            html += '<th style="padding: 8px; text-align: left; border: 1px solid var(--gray-300);">Column</th>';
+            html += '<th style="padding: 8px; text-align: right; border: 1px solid var(--gray-300);">Count</th>';
+            html += '<th style="padding: 8px; text-align: right; border: 1px solid var(--gray-300);">Mean</th>';
+            html += '<th style="padding: 8px; text-align: right; border: 1px solid var(--gray-300);">Min</th>';
+            html += '<th style="padding: 8px; text-align: right; border: 1px solid var(--gray-300);">Max</th>';
+            html += '</tr></thead><tbody>';
+            
+            Object.entries(stats).forEach(([column, data]) => {
+                html += '<tr style="border-bottom: 1px solid var(--gray-200);">';
+                html += '<td style="padding: 8px; border: 1px solid var(--gray-300); font-weight: 500;">' + column + '</td>';
+                html += '<td style="padding: 8px; text-align: right; border: 1px solid var(--gray-300);">' + (data.count || '-') + '</td>';
+                html += '<td style="padding: 8px; text-align: right; border: 1px solid var(--gray-300);">' + (data.mean ? data.mean.toFixed(2) : '-') + '</td>';
+                html += '<td style="padding: 8px; text-align: right; border: 1px solid var(--gray-300);">' + (data.min !== undefined ? data.min : '-') + '</td>';
+                html += '<td style="padding: 8px; text-align: right; border: 1px solid var(--gray-300);">' + (data.max !== undefined ? data.max : '-') + '</td>';
+                html += '</tr>';
+            });
+            
+            html += '</tbody></table></div>';
+            return html;
+        }
+
+        // Format table preview nicely
+        function formatTablePreview(data) {
+            if (!Array.isArray(data) || data.length === 0) return '<p>No preview data available</p>';
+            
+            const headers = Object.keys(data[0]);
+            let html = '<div style="overflow-x: auto;"><table style="width: 100%; border-collapse: collapse; font-size: 0.9em;">';
+            html += '<thead><tr style="background: var(--gray-100); border-bottom: 2px solid var(--gray-300);">';
+            
+            headers.forEach(header => {
+                html += '<th style="padding: 8px; text-align: left; border: 1px solid var(--gray-300);">' + header + '</th>';
+            });
+            
+            html += '</tr></thead><tbody>';
+            
+            data.slice(0, 5).forEach(row => {  // Show first 5 rows
+                html += '<tr style="border-bottom: 1px solid var(--gray-200);">';
+                headers.forEach(header => {
+                    const value = row[header];
+                    html += '<td style="padding: 8px; border: 1px solid var(--gray-300);">' + (value !== null && value !== undefined ? value : '-') + '</td>';
+                });
+                html += '</tr>';
+            });
+            
+            html += '</tbody></table></div>';
+            if (data.length > 5) {
+                html += '<p style="margin-top: 0.5rem; color: var(--gray-600); font-size: 0.85em;">Showing first 5 rows of ' + data.length + ' total rows</p>';
+            }
+            return html;
+        }
+
         // Display generated chart
         function showChart(chartSpec) {
             const chartSection = document.getElementById('chartSection');
@@ -3258,7 +5174,7 @@ Examples:
                 
             } catch (plotError) {
                 console.error('Plotly error:', plotError);
-                chartContainer.innerHTML = '<div style="padding: 40px; text-align: center; color: var(--gray-500); background: var(--gray-50); border-radius: var(--border-radius-lg);"><i data-lucide="alert-circle" style="width: 2rem; height: 2rem; margin-bottom: 1rem;"></i><h3>Chart Rendering Failed</h3><p>The AI generated a chart specification, but it could not be rendered properly.</p><details style="margin-top: 20px; text-align: left;"><summary style="cursor: pointer; font-weight: 600; color: var(--primary-600);">View Raw Chart Specification</summary><pre style="background: white; padding: 15px; border-radius: 8px; overflow: auto; margin-top: 10px; font-size: 12px; border: 1px solid var(--gray-200);">' + JSON.stringify(chartSpec, null, 2) + '</pre></details></div>';
+                chartContainer.innerHTML = '<div style="padding: 40px; text-align: center; color: var(--gray-500); background: var(--gray-50); border-radius: var(--radius-lg);"><i data-lucide="alert-circle" style="width: 2rem; height: 2rem; margin-bottom: 1rem;"></i><h3>Chart Rendering Failed</h3><p>The AI generated a chart specification, but it could not be rendered properly.</p><details style="margin-top: 20px; text-align: left;"><summary style="cursor: pointer; font-weight: 600; color: var(--primary-600);">View Raw Chart Specification</summary><pre style="background: white; padding: 15px; border-radius: 8px; overflow: auto; margin-top: 10px; font-size: 12px; border: 1px solid var(--gray-200);">' + JSON.stringify(chartSpec, null, 2) + '</pre></details></div>';
                 chartSection.style.display = 'block';
                 lucide.createIcons();
             }
@@ -3271,7 +5187,7 @@ Examples:
             
             let contentHtml = '';
             suggestedPrompts.forEach(prompt => {
-                contentHtml += '<div class="suggestion-card" onclick="setQuery(\\'' + prompt.prompt + '\\')"><div class="suggestion-title">' + prompt.prompt + '</div><div class="suggestion-description">' + prompt.description + '</div><span class="suggestion-category">' + prompt.category + '</span></div>';
+                contentHtml += '<div class="suggestion-card" onclick="setQuery('' + prompt.prompt.replace(/'/g, '&apos;') + '')"><div class="suggestion-title">' + prompt.prompt + '</div><div class="suggestion-description">' + prompt.description + '</div><span class="suggestion-category">' + prompt.category + '</span></div>';
             });
             
             suggestionsContainer.innerHTML = contentHtml;
@@ -3337,6 +5253,82 @@ Examples:
                 statusDiv.innerHTML = '<div class="status warning"><i data-lucide="alert-triangle"></i>Please select a valid CSV file.</div>';
                 lucide.createIcons();
             }
+        }
+        
+        // Add query history display function
+        function showQueryHistory() {
+            let historySection = document.getElementById('queryHistorySection');
+            
+            if (!historySection) {
+                historySection = document.createElement('div');
+                historySection.id = 'queryHistorySection';
+                historySection.className = 'full-width';
+                historySection.innerHTML = '<div class="card fade-in"><div class="card-header"><i data-lucide="history" class="card-icon"></i><h2 class="card-title">Query History</h2></div><div id="queryHistoryContent"></div></div>';
+                
+                // Insert before the chart section
+                const chartSection = document.getElementById('chartSection');
+                const container = chartSection.parentNode;
+                container.insertBefore(historySection, chartSection);
+            }
+            
+            const historyContent = document.getElementById('queryHistoryContent');
+            
+            let historyHtml = '<div style="margin-bottom: 1rem; color: var(--gray-600); font-size: 0.9rem;">Your recent queries and results:</div>';
+            
+            queryHistory.slice(-5).reverse().forEach((item, index) => {
+                const timeAgo = getTimeAgo(new Date(item.timestamp));
+                const isLatest = index === 0;
+                
+                historyHtml += '<div style="' + (isLatest ? 'background: var(--primary-50); border: 2px solid var(--primary-200);' : 'background: white; border: 1px solid var(--gray-200);') + ' border-radius: 8px; padding: 1rem; margin-bottom: 0.75rem; position: relative;">';
+                
+                if (isLatest) {
+                    historyHtml += '<div style="position: absolute; top: -8px; right: 1rem; background: var(--primary-500); color: white; padding: 0.25rem 0.75rem; border-radius: 12px; font-size: 0.75rem; font-weight: 600;">Latest</div>';
+                }
+                
+                historyHtml += '<div style="font-weight: 600; color: var(--gray-800); margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem;">';
+                historyHtml += '<i data-lucide="message-circle" style="width: 16px; height: 16px; color: var(--primary-600);"></i>';
+                historyHtml += 'Query ' + (queryHistory.length - index);
+                historyHtml += '<span style="margin-left: auto; font-size: 0.8rem; color: var(--gray-500); font-weight: 400;">' + timeAgo + '</span>';
+                historyHtml += '</div>';
+                
+                historyHtml += '<div style="color: var(--gray-700); font-style: italic; margin-bottom: 0.75rem; padding: 0.5rem; background: var(--gray-50); border-radius: 4px; border-left: 3px solid var(--primary-400);">';
+                historyHtml += '"' + item.query + '"';
+                historyHtml += '</div>';
+                
+                if (item.result) {
+                    if (item.result.result && item.result.result.type === 'plot') {
+                        historyHtml += '<div style="color: var(--success-700); font-size: 0.9rem;"><i data-lucide="chart-bar" style="width: 14px; height: 14px; margin-right: 0.25rem;"></i>Generated interactive chart</div>';
+                    } else if (item.result.chartSpec) {
+                        historyHtml += '<div style="color: var(--success-700); font-size: 0.9rem;"><i data-lucide="chart-line" style="width: 14px; height: 14px; margin-right: 0.25rem;"></i>Generated custom visualization</div>';
+                    } else {
+                        historyHtml += '<div style="color: var(--info-700); font-size: 0.9rem;"><i data-lucide="table" style="width: 14px; height: 14px; margin-right: 0.25rem;"></i>Returned data analysis</div>';
+                    }
+                }
+                
+                historyHtml += '</div>';
+            });
+            
+            if (queryHistory.length > 5) {
+                historyHtml += '<div style="text-align: center; color: var(--gray-500); font-size: 0.875rem; margin-top: 1rem;">Showing 5 most recent queries out of ' + queryHistory.length + ' total</div>';
+            }
+            
+            historyContent.innerHTML = historyHtml;
+            historySection.style.display = 'block';
+            lucide.createIcons();
+        }
+        
+        // Helper function to format time ago
+        function getTimeAgo(date) {
+            const now = new Date();
+            const diffMs = now - date;
+            const diffSecs = Math.floor(diffMs / 1000);
+            const diffMins = Math.floor(diffSecs / 60);
+            const diffHours = Math.floor(diffMins / 60);
+            
+            if (diffSecs < 60) return 'Just now';
+            if (diffMins < 60) return diffMins + 'm ago';
+            if (diffHours < 24) return diffHours + 'h ago';
+            return Math.floor(diffHours / 24) + 'd ago';
         }
     <\/script>
 </body>

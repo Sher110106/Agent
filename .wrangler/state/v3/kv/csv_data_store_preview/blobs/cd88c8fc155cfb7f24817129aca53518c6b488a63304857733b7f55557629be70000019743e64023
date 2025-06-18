@@ -1,1 +1,0 @@
-[{"name":"Date & Time","type":"date"},{"name":"Barometer hPa","type":"number"},{"name":"Temp °C","type":"number"},{"name":"Hum %","type":"number"},{"name":"Avg Wind Speed - m/s","type":"number"},{"name":"Prevailing Wind Direction","type":"string"},{"name":"Rain mm","type":"number"},{"name":"Solar Rad W/m^2","type":"number"},{"name":"Comfort Label","type":"string"}]
